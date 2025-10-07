@@ -1,0 +1,51 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-08-08 22:43:10.920882",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "learning_objectives",
+  "importance_level",
+  "assessment_weight",
+  "target_mastery_level"
+ ],
+ "fields": [
+  {
+   "fieldname": "learning_objectives",
+   "fieldtype": "Link",
+   "label": "Learning objectives",
+   "options": "Learning Objective"
+  },
+  {
+   "fieldname": "importance_level",
+   "fieldtype": "Select",
+   "label": "Importance Level",
+   "options": "Primary\nSecondary\nOptional"
+  },
+  {
+   "fieldname": "assessment_weight",
+   "fieldtype": "Percent",
+   "label": "Assessment Weight"
+  },
+  {
+   "fieldname": "target_mastery_level",
+   "fieldtype": "Select",
+   "label": "target_mastery_level",
+   "options": "Basic\nProficient\nAdvanced"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-08-08 22:43:10.920882",
+ "modified_by": "Administrator",
+ "module": "TAP AI",
+ "name": "UnitLearningObjective",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

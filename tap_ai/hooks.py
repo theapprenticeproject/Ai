@@ -1,25 +1,42 @@
+from . import __version__ as app_version
+from frappe import get_all
+
+
 app_name = "tap_ai"
-app_title = "TAP AI"
+app_title = "Tap Ai"
 app_publisher = "Anish Aman"
-app_description = "TAP AI app forked from TAP LMS feature/RAG"
-app_email = "anishaman6206@gmail.com"
-app_license = "mit"
+app_description = "LMS system for tap"
+app_email = "tech4dev@gmail.com"
+app_license = "MIT"
 
-# Apps
-# ------------------
 
-# required_apps = []
+# Document Events
+doc_events = {
+    "School": {
+        "before_save": "tap_ai.tap_ai.doctype.school.school.before_save"
+    },
+    "Teacher": {
+        "on_update": "tap_ai.glific_webhook.update_glific_contact"
+    },
+    "StudentStageProgress": {
+        "after_insert": "tap_ai.tap_ai.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress",
+        "on_update": "tap_ai.tap_ai.doctype.studentonboardingprogress.studentonboardingprogress.update_student_progress"
+    }
+}
 
-# Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "tap_ai",
-# 		"logo": "/assets/tap_ai/logo.png",
-# 		"title": "TAP AI",
-# 		"route": "/tap_ai",
-# 		"has_permission": "tap_ai.api.permission.has_app_permission"
-# 	}
-# ]
+# Scheduled Tasks
+scheduler_events = {
+    "daily": [
+        "tap_ai.tap_ai.page.onboarding_flow_trigger.onboarding_flow_trigger.update_incomplete_stages"
+    ]
+}
+
+# Page configurations
+page_js = {"onboarding-flow-trigger": "public/js/onboarding_flow_trigger.js"}
+
+# Reports
+report_script_custom_doctypes = ["StudentStageProgress"]
+
 
 # Includes in <head>
 # ------------------
@@ -48,11 +65,6 @@ app_license = "mit"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
-# Svg Icons
-# ------------------
-# include app icons in desk
-# app_include_icons = "tap_ai/public/icons.svg"
-
 # Home Pages
 # ----------
 
@@ -61,7 +73,7 @@ app_license = "mit"
 
 # website user home page (by Role)
 # role_home_page = {
-# 	"Role": "home_page"
+#       "Role": "home_page"
 # }
 
 # Generators
@@ -75,8 +87,8 @@ app_license = "mit"
 
 # add methods and filters to jinja environment
 # jinja = {
-# 	"methods": "tap_ai.utils.jinja_methods",
-# 	"filters": "tap_ai.utils.jinja_filters"
+#       "methods": "tap_ai.utils.jinja_methods",
+#       "filters": "tap_ai.utils.jinja_filters"
 # }
 
 # Installation
@@ -91,22 +103,6 @@ app_license = "mit"
 # before_uninstall = "tap_ai.uninstall.before_uninstall"
 # after_uninstall = "tap_ai.uninstall.after_uninstall"
 
-# Integration Setup
-# ------------------
-# To set up dependencies/integrations with other apps
-# Name of the app being installed is passed as an argument
-
-# before_app_install = "tap_ai.utils.before_app_install"
-# after_app_install = "tap_ai.utils.after_app_install"
-
-# Integration Cleanup
-# -------------------
-# To clean up dependencies/integrations with other apps
-# Name of the app being uninstalled is passed as an argument
-
-# before_app_uninstall = "tap_ai.utils.before_app_uninstall"
-# after_app_uninstall = "tap_ai.utils.after_app_uninstall"
-
 # Desk Notifications
 # ------------------
 # See frappe.core.notifications.get_notification_config
@@ -118,11 +114,11 @@ app_license = "mit"
 # Permissions evaluated in scripted ways
 
 # permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
+#       "Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
 # }
 #
 # has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
+#       "Event": "frappe.desk.doctype.event.event.has_permission",
 # }
 
 # DocType Class
@@ -130,7 +126,7 @@ app_license = "mit"
 # Override standard doctype classes
 
 # override_doctype_class = {
-# 	"ToDo": "custom_app.overrides.CustomToDo"
+#       "ToDo": "custom_app.overrides.CustomToDo"
 # }
 
 # Document Events
@@ -138,32 +134,32 @@ app_license = "mit"
 # Hook on document methods and events
 
 # doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
+#       "*": {
+#               "on_update": "method",
+#               "on_cancel": "method",
+#               "on_trash": "method"
+#       }
 # }
 
 # Scheduled Tasks
 # ---------------
 
 # scheduler_events = {
-# 	"all": [
-# 		"tap_ai.tasks.all"
-# 	],
-# 	"daily": [
-# 		"tap_ai.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"tap_ai.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"tap_ai.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"tap_ai.tasks.monthly"
-# 	],
+#       "all": [
+#               "tap_ai.tasks.all"
+#       ],
+#       "daily": [
+#               "tap_ai.tasks.daily"
+#       ],
+#       "hourly": [
+#               "tap_ai.tasks.hourly"
+#       ],
+#       "weekly": [
+#               "tap_ai.tasks.weekly"
+#       ],
+#       "monthly": [
+#               "tap_ai.tasks.monthly"
+#       ],
 # }
 
 # Testing
@@ -175,14 +171,14 @@ app_license = "mit"
 # ------------------------------
 #
 # override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "tap_ai.event.get_events"
+#       "frappe.desk.doctype.event.event.get_events": "tap_ai.event.get_events"
 # }
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
 # along with any modifications made in other Frappe apps
 # override_doctype_dashboards = {
-# 	"Task": "tap_ai.task.get_dashboard_data"
+#       "Task": "tap_ai.task.get_dashboard_data"
 # }
 
 # exempt linked doctypes from being automatically cancelled
@@ -194,51 +190,36 @@ app_license = "mit"
 
 # ignore_links_on_delete = ["Communication", "ToDo"]
 
-# Request Events
-# ----------------
-# before_request = ["tap_ai.utils.before_request"]
-# after_request = ["tap_ai.utils.after_request"]
-
-# Job Events
-# ----------
-# before_job = ["tap_ai.utils.before_job"]
-# after_job = ["tap_ai.utils.after_job"]
 
 # User Data Protection
 # --------------------
 
 # user_data_fields = [
-# 	{
-# 		"doctype": "{doctype_1}",
-# 		"filter_by": "{filter_by}",
-# 		"redact_fields": ["{field_1}", "{field_2}"],
-# 		"partial": 1,
-# 	},
-# 	{
-# 		"doctype": "{doctype_2}",
-# 		"filter_by": "{filter_by}",
-# 		"partial": 1,
-# 	},
-# 	{
-# 		"doctype": "{doctype_3}",
-# 		"strict": False,
-# 	},
-# 	{
-# 		"doctype": "{doctype_4}"
-# 	}
+#       {
+#               "doctype": "{doctype_1}",
+#               "filter_by": "{filter_by}",
+#               "redact_fields": ["{field_1}", "{field_2}"],
+#               "partial": 1,
+#       },
+#       {
+#               "doctype": "{doctype_2}",
+#               "filter_by": "{filter_by}",
+#               "partial": 1,
+#       },
+#       {
+#               "doctype": "{doctype_3}",
+#               "strict": False,
+#       },
+#       {
+#               "doctype": "{doctype_4}"
+#       }
 # ]
 
 # Authentication and authorization
 # --------------------------------
 
 # auth_hooks = [
-# 	"tap_ai.auth.validate"
+#       "tap_ai.auth.validate"
 # ]
 
-# Automatically update python controller files with type annotations for this app.
-# export_python_type_annotations = True
-
-# default_log_clearing_doctypes = {
-# 	"Logging DocType Name": 30  # days to retain logs
-# }
-
+fixtures = [{ "doctype": "Client Script", "filters": [ ["module", "in", ( "Tap ai" )] ] }]

@@ -5,3 +5,7 @@
 tags
 node_modules
 __pycache__
+
+# Python venv
+.venv/
+venv/

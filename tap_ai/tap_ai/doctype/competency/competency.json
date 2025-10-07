@@ -1,0 +1,80 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-04-19 14:39:00.007422",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "comp_name",
+  "category",
+  "description",
+  "indicators",
+  "development_stages",
+  "assessment_methods",
+  "related_competencies"
+ ],
+ "fields": [
+  {
+   "fieldname": "comp_name",
+   "fieldtype": "Data",
+   "label": "Name"
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "label": "category",
+   "options": "Cognitive\nSocial\nEmotional\nPhysical\nCreative"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "indicators",
+   "fieldtype": "JSON",
+   "label": "Indicators"
+  },
+  {
+   "fieldname": "development_stages",
+   "fieldtype": "JSON",
+   "label": "Development Stages"
+  },
+  {
+   "fieldname": "assessment_methods",
+   "fieldtype": "Text",
+   "label": "Assessment Methods"
+  },
+  {
+   "fieldname": "related_competencies",
+   "fieldtype": "Data",
+   "label": "Related Competencies"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-04-19 14:39:00.007422",
+ "modified_by": "Administrator",
+ "module": "Tap AI",
+ "name": "Competency",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,91 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{note_name}-{difficulty_tier}",
+ "creation": "2025-08-09 11:49:41.438143",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "note_name",
+  "content",
+  "attachments",
+  "note_type",
+  "estimated_duration",
+  "difficulty_tier",
+  "translated_content",
+  "assessments"
+ ],
+ "fields": [
+  {
+   "fieldname": "note_name",
+   "fieldtype": "Data",
+   "label": "Note Name"
+  },
+  {
+   "fieldname": "content",
+   "fieldtype": "Text Editor",
+   "label": "content"
+  },
+  {
+   "fieldname": "attachments",
+   "fieldtype": "Attach",
+   "label": "Attachments"
+  },
+  {
+   "fieldname": "note_type",
+   "fieldtype": "Select",
+   "label": "Note Type",
+   "options": "Reading_Material\nInstructions\nSummary\nReference\nHandout"
+  },
+  {
+   "fieldname": "estimated_duration",
+   "fieldtype": "Data",
+   "label": "Estimated Duration"
+  },
+  {
+   "fieldname": "translated_content",
+   "fieldtype": "Table",
+   "label": "Translated Content",
+   "options": "NoteTranslation"
+  },
+  {
+   "fieldname": "difficulty_tier",
+   "fieldtype": "Select",
+   "label": "Difficulty Tier",
+   "options": "Remedial\nBasic\nIntermediate\nAdvanced"
+  },
+  {
+   "fieldname": "assessments",
+   "fieldtype": "Table",
+   "label": "Assessments",
+   "options": "AssessmentList"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-09-10 21:38:34.678428",
+ "modified_by": "Administrator",
+ "module": "TAP AI",
+ "name": "NoteContent",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

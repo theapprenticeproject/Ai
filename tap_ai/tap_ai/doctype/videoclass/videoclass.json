@@ -1,0 +1,136 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{video_name}-{difficulty_tier}",
+ "creation": "2024-10-17 16:19:12.281729",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "course_vertical",
+  "video_name",
+  "video_youtube_url",
+  "duration",
+  "description",
+  "video_file",
+  "video_plio_url",
+  "subtitle_file",
+  "video_transcript",
+  "completion_threshold",
+  "video_translations",
+  "additional_files",
+  "estimated_duration",
+  "difficulty_tier",
+  "assessments"
+ ],
+ "fields": [
+  {
+   "fieldname": "video_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Video Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "duration",
+   "fieldtype": "Time",
+   "label": "Duration"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text Editor",
+   "label": "Description"
+  },
+  {
+   "fieldname": "video_youtube_url",
+   "fieldtype": "Data",
+   "label": "Youtube URL"
+  },
+  {
+   "fieldname": "video_file",
+   "fieldtype": "Attach",
+   "label": "Video File"
+  },
+  {
+   "fieldname": "video_plio_url",
+   "fieldtype": "Data",
+   "label": "Plio URL"
+  },
+  {
+   "fieldname": "subtitle_file",
+   "fieldtype": "Attach",
+   "label": "Subtitle File"
+  },
+  {
+   "fieldname": "video_transcript",
+   "fieldtype": "Text",
+   "label": "Video Transcript"
+  },
+  {
+   "fieldname": "completion_threshold",
+   "fieldtype": "Percent",
+   "label": "Completion Threshold"
+  },
+  {
+   "fieldname": "video_translations",
+   "fieldtype": "Table",
+   "label": "Video Translations",
+   "options": "VideoTranslation"
+  },
+  {
+   "fieldname": "additional_files",
+   "fieldtype": "Table",
+   "label": "Additional Files ",
+   "options": "ContentAttachment"
+  },
+  {
+   "fieldname": "estimated_duration",
+   "fieldtype": "Data",
+   "label": "Completion Duration"
+  },
+  {
+   "fieldname": "difficulty_tier",
+   "fieldtype": "Select",
+   "label": "Difficulty Tier",
+   "options": "Remedial\nBasic\nIntermediate\nAdvanced"
+  },
+  {
+   "fieldname": "course_vertical",
+   "fieldtype": "Link",
+   "label": "Course Vertical",
+   "options": "Course Verticals"
+  },
+  {
+   "fieldname": "assessments",
+   "fieldtype": "Table",
+   "label": "Assessments",
+   "options": "AssessmentList"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-09-10 21:40:00.508166",
+ "modified_by": "Administrator",
+ "module": "TAP AI",
+ "name": "VideoClass",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

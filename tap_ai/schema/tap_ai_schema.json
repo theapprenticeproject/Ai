@@ -1,0 +1,896 @@
+{
+  "aliases": {
+    "assessmentlist_id": [
+      "tabAssessmentList",
+      "name"
+    ],
+    "assignment learning objective_id": [
+      "tabAssignment Learning Objective",
+      "name"
+    ],
+    "assignment_id": [
+      "tabAssignment",
+      "name"
+    ],
+    "assignmenttranslation_id": [
+      "tabAssignmentTranslation",
+      "name"
+    ],
+    "competency_id": [
+      "tabCompetency",
+      "name"
+    ],
+    "competencylist_id": [
+      "tabCompetencyList",
+      "name"
+    ],
+    "contentattachment_id": [
+      "tabContentAttachment",
+      "name"
+    ],
+    "course level_id": [
+      "tabCourse Level",
+      "name"
+    ],
+    "course level_name": [
+      "tabCourse Level",
+      "name1"
+    ],
+    "course verticals_id": [
+      "tabCourse Verticals",
+      "name"
+    ],
+    "course verticals_name": [
+      "tabCourse Verticals",
+      "name1"
+    ],
+    "courseproject_id": [
+      "tabCourseProject",
+      "name"
+    ],
+    "file type restriction_id": [
+      "tabFile Type Restriction",
+      "name"
+    ],
+    "learning objective_id": [
+      "tabLearning Objective",
+      "name"
+    ],
+    "learningunit_id": [
+      "tabLearningUnit",
+      "name"
+    ],
+    "learningunitlist_id": [
+      "tabLearningUnitList",
+      "name"
+    ],
+    "notecontent_id": [
+      "tabNoteContent",
+      "name"
+    ],
+    "notetranslation_id": [
+      "tabNoteTranslation",
+      "name"
+    ],
+    "projecttranslation_id": [
+      "tabProjectTranslation",
+      "name"
+    ],
+    "quiz_id": [
+      "tabQuiz",
+      "name"
+    ],
+    "quizoption_id": [
+      "tabQuizOption",
+      "name"
+    ],
+    "quizoptionlist_id": [
+      "tabQuizOptionList",
+      "name"
+    ],
+    "quizoptiontranslation_id": [
+      "tabQuizOptionTranslation",
+      "name"
+    ],
+    "quizquestion_id": [
+      "tabQuizQuestion",
+      "name"
+    ],
+    "quizquestionlist_id": [
+      "tabQuizQuestionList",
+      "name"
+    ],
+    "quizquestiontranslation_id": [
+      "tabQuizQuestionTranslation",
+      "name"
+    ],
+    "related content_id": [
+      "tabRelated Content",
+      "name"
+    ],
+    "tap language_id": [
+      "tabTAP Language",
+      "name"
+    ],
+    "unitcontentitem_id": [
+      "tabUnitContentItem",
+      "name"
+    ],
+    "unitlearningobjective_id": [
+      "tabUnitLearningObjective",
+      "name"
+    ],
+    "videoclass_id": [
+      "tabVideoClass",
+      "name"
+    ],
+    "videotranslation_id": [
+      "tabVideoTranslation",
+      "name"
+    ]
+  },
+  "allowed_joins": [
+    {
+      "left_key": "name",
+      "left_table": "tabNoteContent",
+      "right_key": "parent",
+      "right_table": "tabNoteTranslation",
+      "why": "NoteContent is the parent for NoteTranslation records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabNoteContent",
+      "right_key": "parent",
+      "right_table": "tabAssessmentList",
+      "why": "NoteContent is the parent for AssessmentList records (a child table)."
+    },
+    {
+      "left_key": "subject",
+      "left_table": "tabAssignment",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "Assignment.subject links to Course Verticals.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabAssignment",
+      "right_key": "parent",
+      "right_table": "tabAssignment Learning Objective",
+      "why": "Assignment is the parent for Assignment Learning Objective records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabAssignment",
+      "right_key": "parent",
+      "right_table": "tabRelated Content",
+      "why": "Assignment is the parent for Related Content records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabAssignment",
+      "right_key": "parent",
+      "right_table": "tabFile Type Restriction",
+      "why": "Assignment is the parent for File Type Restriction records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabAssignment",
+      "right_key": "parent",
+      "right_table": "tabAssignmentTranslation",
+      "why": "Assignment is the parent for AssignmentTranslation records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuizQuestion",
+      "right_key": "parent",
+      "right_table": "tabQuizOptionList",
+      "why": "QuizQuestion is the parent for QuizOptionList records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuizQuestion",
+      "right_key": "parent",
+      "right_table": "tabQuizQuestionTranslation",
+      "why": "QuizQuestion is the parent for QuizQuestionTranslation records (a child table)."
+    },
+    {
+      "left_key": "quiz_id",
+      "left_table": "tabQuizQuestion",
+      "right_key": "name",
+      "right_table": "tabQuiz",
+      "why": "QuizQuestion.quiz_id links to Quiz.name"
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabQuizOptionTranslation",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "QuizOptionTranslation.language links to TAP Language.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabVideoClass",
+      "right_key": "parent",
+      "right_table": "tabVideoTranslation",
+      "why": "VideoClass is the parent for VideoTranslation records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabVideoClass",
+      "right_key": "parent",
+      "right_table": "tabContentAttachment",
+      "why": "VideoClass is the parent for ContentAttachment records (a child table)."
+    },
+    {
+      "left_key": "course_vertical",
+      "left_table": "tabVideoClass",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "VideoClass.course_vertical links to Course Verticals.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabVideoClass",
+      "right_key": "parent",
+      "right_table": "tabAssessmentList",
+      "why": "VideoClass is the parent for AssessmentList records (a child table)."
+    },
+    {
+      "left_key": "question",
+      "left_table": "tabQuizQuestionList",
+      "right_key": "name",
+      "right_table": "tabQuizQuestion",
+      "why": "QuizQuestionList.question links to QuizQuestion.name"
+    },
+    {
+      "left_key": "competency",
+      "left_table": "tabCompetencyList",
+      "right_key": "name",
+      "right_table": "tabCompetency",
+      "why": "CompetencyList.competency links to Competency.name"
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabQuizQuestionTranslation",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "QuizQuestionTranslation.language links to TAP Language.name"
+    },
+    {
+      "left_key": "vertical",
+      "left_table": "tabCourse Level",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "Course Level.vertical links to Course Verticals.name"
+    },
+    {
+      "left_key": "stage",
+      "left_table": "tabCourse Level",
+      "right_key": "name",
+      "right_table": "tabStage Grades",
+      "why": "Course Level.stage links to Stage Grades.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabCourse Level",
+      "right_key": "parent",
+      "right_table": "tabUnitLearningObjective",
+      "why": "Course Level is the parent for UnitLearningObjective records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabCourse Level",
+      "right_key": "parent",
+      "right_table": "tabLearningUnitList",
+      "why": "Course Level is the parent for LearningUnitList records (a child table)."
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabNoteTranslation",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "NoteTranslation.language links to TAP Language.name"
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabAssignmentTranslation",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "AssignmentTranslation.language links to TAP Language.name"
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabVideoTranslation",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "VideoTranslation.language links to TAP Language.name"
+    },
+    {
+      "left_key": "subject",
+      "left_table": "tabLearning Objective",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "Learning Objective.subject links to Course Verticals.name"
+    },
+    {
+      "left_key": "prerequisites",
+      "left_table": "tabLearning Objective",
+      "right_key": "name",
+      "right_table": "tabLearning Objective",
+      "why": "Learning Objective.prerequisites links to Learning Objective.name"
+    },
+    {
+      "left_key": "project_translations",
+      "left_table": "tabCourseProject",
+      "right_key": "name",
+      "right_table": "tabProjectTranslation",
+      "why": "CourseProject.project_translations links to ProjectTranslation.name"
+    },
+    {
+      "left_key": "learning_objective",
+      "left_table": "tabAssignment Learning Objective",
+      "right_key": "name",
+      "right_table": "tabLearning Objective",
+      "why": "Assignment Learning Objective.learning_objective links to Learning Objective.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuizOption",
+      "right_key": "parent",
+      "right_table": "tabQuizOptionTranslation",
+      "why": "QuizOption is the parent for QuizOptionTranslation records (a child table)."
+    },
+    {
+      "left_key": "question_id",
+      "left_table": "tabQuizOption",
+      "right_key": "name",
+      "right_table": "tabQuizQuestion",
+      "why": "QuizOption.question_id links to QuizQuestion.name"
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabProjectTranslation",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "ProjectTranslation.language links to TAP Language.name"
+    },
+    {
+      "left_key": "learning_objectives",
+      "left_table": "tabUnitLearningObjective",
+      "right_key": "name",
+      "right_table": "tabLearning Objective",
+      "why": "UnitLearningObjective.learning_objectives links to Learning Objective.name"
+    },
+    {
+      "left_key": "options",
+      "left_table": "tabQuizOptionList",
+      "right_key": "name",
+      "right_table": "tabQuizOption",
+      "why": "QuizOptionList.options links to QuizOption.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabLearningUnit",
+      "right_key": "parent",
+      "right_table": "tabCompetencyList",
+      "why": "LearningUnit is the parent for CompetencyList records (a child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabLearningUnit",
+      "right_key": "parent",
+      "right_table": "tabUnitLearningObjective",
+      "why": "LearningUnit is the parent for UnitLearningObjective records (a child table)."
+    },
+    {
+      "left_key": "parent_unit",
+      "left_table": "tabLearningUnit",
+      "right_key": "name",
+      "right_table": "tabLearningUnit",
+      "why": "LearningUnit.parent_unit links to LearningUnit.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabLearningUnit",
+      "right_key": "parent",
+      "right_table": "tabUnitContentItem",
+      "why": "LearningUnit is the parent for UnitContentItem records (a child table)."
+    },
+    {
+      "left_key": "course_vertical",
+      "left_table": "tabLearningUnit",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "LearningUnit.course_vertical links to Course Verticals.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuiz",
+      "right_key": "parent",
+      "right_table": "tabQuizQuestionList",
+      "why": "Quiz is the parent for QuizQuestionList records (a child table)."
+    },
+    {
+      "left_key": "learning_unit",
+      "left_table": "tabLearningUnitList",
+      "right_key": "name",
+      "right_table": "tabLearningUnit",
+      "why": "LearningUnitList.learning_unit links to LearningUnit.name"
+    }
+  ],
+  "allowlist": [
+    "tabAssessmentList",
+    "tabAssignment",
+    "tabAssignment Learning Objective",
+    "tabAssignmentTranslation",
+    "tabCompetency",
+    "tabCompetencyList",
+    "tabContentAttachment",
+    "tabCourse Level",
+    "tabCourse Verticals",
+    "tabCourseProject",
+    "tabFile Type Restriction",
+    "tabLearning Objective",
+    "tabLearningUnit",
+    "tabLearningUnitList",
+    "tabNoteContent",
+    "tabNoteTranslation",
+    "tabProjectTranslation",
+    "tabQuiz",
+    "tabQuizOption",
+    "tabQuizOptionList",
+    "tabQuizOptionTranslation",
+    "tabQuizQuestion",
+    "tabQuizQuestionList",
+    "tabQuizQuestionTranslation",
+    "tabRelated Content",
+    "tabTAP Language",
+    "tabUnitContentItem",
+    "tabUnitLearningObjective",
+    "tabVideoClass",
+    "tabVideoTranslation"
+  ],
+  "guardrails": [
+    "Use ONLY tables listed in the 'allowlist'.",
+    "Use ONLY joins defined in the 'allowed_joins'.",
+    "The Primary Key (PK) for all tables is the 'name' column.",
+    "When displaying a record's name to a user, prefer using its 'display_field' column if available.",
+    "Always include a LIMIT clause (e.g., LIMIT 20) in queries that might return many rows."
+  ],
+  "safe_views": {},
+  "tables": {
+    "tabAssessmentList": {
+      "columns": [
+        "assessment",
+        "assessment_type",
+        "name"
+      ],
+      "description": "Assessmentlist records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "AssessmentList",
+      "pk": "name"
+    },
+    "tabAssignment": {
+      "columns": [
+        "assignment_name",
+        "assignment_translations",
+        "assignment_type",
+        "description",
+        "difficulty_tier",
+        "enable_auto_feedback",
+        "estimated_duration",
+        "feedback_prompt",
+        "file_type_restrictions",
+        "learning_objectives",
+        "max_file_size",
+        "max_score",
+        "name",
+        "rag_settings_section",
+        "reference_image",
+        "reference_material_section",
+        "related_content",
+        "subject",
+        "submission_guidelines"
+      ],
+      "description": "Assignment records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "Assignment",
+      "pk": "name"
+    },
+    "tabAssignment Learning Objective": {
+      "columns": [
+        "learning_objective",
+        "name"
+      ],
+      "description": "Assignment Learning Objective records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "Assignment Learning Objective",
+      "pk": "name"
+    },
+    "tabAssignmentTranslation": {
+      "columns": [
+        "language",
+        "name",
+        "translated_description",
+        "translated_guidelines",
+        "translated_title"
+      ],
+      "description": "Assignmenttranslation records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "AssignmentTranslation",
+      "pk": "name"
+    },
+    "tabCompetency": {
+      "columns": [
+        "assessment_methods",
+        "category",
+        "comp_name",
+        "description",
+        "development_stages",
+        "indicators",
+        "name",
+        "related_competencies"
+      ],
+      "description": "Competency records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "Competency",
+      "pk": "name"
+    },
+    "tabCompetencyList": {
+      "columns": [
+        "competency",
+        "name"
+      ],
+      "description": "Competencylist records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "CompetencyList",
+      "pk": "name"
+    },
+    "tabContentAttachment": {
+      "columns": [
+        "file",
+        "file_name",
+        "name"
+      ],
+      "description": "Contentattachment records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "ContentAttachment",
+      "pk": "name"
+    },
+    "tabCourse Level": {
+      "columns": [
+        "course_description",
+        "course_image",
+        "course_objectives",
+        "course_summary",
+        "kit_less",
+        "learning_outcomes",
+        "learning_units",
+        "name",
+        "name1",
+        "prerequisite_knowledge",
+        "stage",
+        "vertical"
+      ],
+      "description": "Course Level records. Key columns: name (Primary Key), name1 (display name).",
+      "display_field": "name1",
+      "doctype": "Course Level",
+      "pk": "name"
+    },
+    "tabCourse Verticals": {
+      "columns": [
+        "name",
+        "name1",
+        "name2",
+        "vertical_id"
+      ],
+      "description": "Course Verticals records. Key columns: name (Primary Key), name1 (display name).",
+      "display_field": "name1",
+      "doctype": "Course Verticals",
+      "pk": "name"
+    },
+    "tabCourseProject": {
+      "columns": [
+        "description",
+        "difficulty_tier",
+        "name",
+        "project_name",
+        "project_translations",
+        "submission_type"
+      ],
+      "description": "Courseproject records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "CourseProject",
+      "pk": "name"
+    },
+    "tabFile Type Restriction": {
+      "columns": [
+        "file_type",
+        "name"
+      ],
+      "description": "File Type Restriction records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "File Type Restriction",
+      "pk": "name"
+    },
+    "tabLearning Objective": {
+      "columns": [
+        "description",
+        "difficulty_tier",
+        "grade_level",
+        "name",
+        "objective_name",
+        "prerequisites",
+        "subject"
+      ],
+      "description": "Learning Objective records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "Learning Objective",
+      "pk": "name"
+    },
+    "tabLearningUnit": {
+      "columns": [
+        "certificate_on_completion",
+        "competencies_addressed",
+        "completion_criteria",
+        "content_items",
+        "course_vertical",
+        "description",
+        "difficulty_tier",
+        "estimated_duration",
+        "learning_objectives",
+        "name",
+        "order",
+        "parent_unit",
+        "real_world_connection",
+        "status",
+        "unit_name",
+        "unit_type"
+      ],
+      "description": "Learningunit records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "LearningUnit",
+      "pk": "name"
+    },
+    "tabLearningUnitList": {
+      "columns": [
+        "learning_unit",
+        "name",
+        "week_no"
+      ],
+      "description": "Learningunitlist records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "LearningUnitList",
+      "pk": "name"
+    },
+    "tabNoteContent": {
+      "columns": [
+        "assessments",
+        "attachments",
+        "content",
+        "difficulty_tier",
+        "estimated_duration",
+        "name",
+        "note_name",
+        "note_type",
+        "translated_content"
+      ],
+      "description": "Notecontent records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "NoteContent",
+      "pk": "name"
+    },
+    "tabNoteTranslation": {
+      "columns": [
+        "language",
+        "name",
+        "translated_attachments",
+        "translated_content",
+        "translated_name",
+        "translation_status"
+      ],
+      "description": "Notetranslation records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "NoteTranslation",
+      "pk": "name"
+    },
+    "tabProjectTranslation": {
+      "columns": [
+        "language",
+        "name",
+        "translated_description",
+        "translated_title"
+      ],
+      "description": "Projecttranslation records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "ProjectTranslation",
+      "pk": "name"
+    },
+    "tabQuiz": {
+      "columns": [
+        "description",
+        "difficulty_tier",
+        "estimated_duration",
+        "max_attempts",
+        "name",
+        "passing_score",
+        "questions",
+        "quiz_name",
+        "status",
+        "time_limit",
+        "total_questions"
+      ],
+      "description": "Quiz records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "Quiz",
+      "pk": "name"
+    },
+    "tabQuizOption": {
+      "columns": [
+        "name",
+        "option_number",
+        "option_text",
+        "option_translations",
+        "question_id"
+      ],
+      "description": "Quizoption records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "QuizOption",
+      "pk": "name"
+    },
+    "tabQuizOptionList": {
+      "columns": [
+        "name",
+        "options",
+        "order_number"
+      ],
+      "description": "Quizoptionlist records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "QuizOptionList",
+      "pk": "name"
+    },
+    "tabQuizOptionTranslation": {
+      "columns": [
+        "language",
+        "name",
+        "translated_option"
+      ],
+      "description": "Quizoptiontranslation records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "QuizOptionTranslation",
+      "pk": "name"
+    },
+    "tabQuizQuestion": {
+      "columns": [
+        "correct_option",
+        "explanation",
+        "hint",
+        "name",
+        "options",
+        "points",
+        "question_name",
+        "question_translations",
+        "question_type",
+        "quiz_id"
+      ],
+      "description": "Quizquestion records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "QuizQuestion",
+      "pk": "name"
+    },
+    "tabQuizQuestionList": {
+      "columns": [
+        "name",
+        "question",
+        "question_number"
+      ],
+      "description": "Quizquestionlist records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "QuizQuestionList",
+      "pk": "name"
+    },
+    "tabQuizQuestionTranslation": {
+      "columns": [
+        "language",
+        "name",
+        "translated_explanation",
+        "translated_hint",
+        "translated_question"
+      ],
+      "description": "Quizquestiontranslation records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "QuizQuestionTranslation",
+      "pk": "name"
+    },
+    "tabRelated Content": {
+      "columns": [
+        "content",
+        "content_type",
+        "name"
+      ],
+      "description": "Related Content records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "Related Content",
+      "pk": "name"
+    },
+    "tabTAP Language": {
+      "columns": [
+        "glific_language_id",
+        "language_code",
+        "language_name",
+        "name"
+      ],
+      "description": "Tap Language records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "TAP Language",
+      "pk": "name"
+    },
+    "tabUnitContentItem": {
+      "columns": [
+        "content",
+        "content_type",
+        "is_optional",
+        "name",
+        "note_for_teacher"
+      ],
+      "description": "Unitcontentitem records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "UnitContentItem",
+      "pk": "name"
+    },
+    "tabUnitLearningObjective": {
+      "columns": [
+        "assessment_weight",
+        "importance_level",
+        "learning_objectives",
+        "name",
+        "target_mastery_level"
+      ],
+      "description": "Unitlearningobjective records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "UnitLearningObjective",
+      "pk": "name"
+    },
+    "tabVideoClass": {
+      "columns": [
+        "additional_files",
+        "assessments",
+        "completion_threshold",
+        "course_vertical",
+        "description",
+        "difficulty_tier",
+        "duration",
+        "estimated_duration",
+        "name",
+        "subtitle_file",
+        "video_file",
+        "video_name",
+        "video_plio_url",
+        "video_transcript",
+        "video_translations",
+        "video_youtube_url"
+      ],
+      "description": "Videoclass records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "VideoClass",
+      "pk": "name"
+    },
+    "tabVideoTranslation": {
+      "columns": [
+        "language",
+        "name",
+        "subtitle_file",
+        "translated_description",
+        "translated_name",
+        "video_file",
+        "video_plio_url",
+        "video_transcript",
+        "video_youtube_url"
+      ],
+      "description": "Videotranslation records. Key columns: name (Primary Key).",
+      "display_field": null,
+      "doctype": "VideoTranslation",
+      "pk": "name"
+    }
+  }
+}

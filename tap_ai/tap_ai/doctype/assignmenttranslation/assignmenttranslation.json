@@ -1,0 +1,52 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{language}-{translated_title}",
+ "creation": "2025-08-09 14:45:43.481424",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "language",
+  "translated_title",
+  "translated_description",
+  "translated_guidelines"
+ ],
+ "fields": [
+  {
+   "fieldname": "language",
+   "fieldtype": "Link",
+   "label": "Language",
+   "options": "TAP Language"
+  },
+  {
+   "fieldname": "translated_title",
+   "fieldtype": "Data",
+   "label": "Translated Title"
+  },
+  {
+   "fieldname": "translated_description",
+   "fieldtype": "Text Editor",
+   "label": "Translated Description"
+  },
+  {
+   "fieldname": "translated_guidelines",
+   "fieldtype": "Text Editor",
+   "label": "Translated Guidelines"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-09-06 20:05:14.304106",
+ "modified_by": "Administrator",
+ "module": "TAP AI",
+ "name": "AssignmentTranslation",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

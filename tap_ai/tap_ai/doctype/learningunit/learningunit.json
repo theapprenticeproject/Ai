@@ -1,0 +1,147 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{unit_name}-{unit_type}-{course_level}-{difficulty_tier}-{order}",
+ "creation": "2024-10-17 15:31:17.464836",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "unit_name",
+  "unit_type",
+  "difficulty_tier",
+  "course_vertical",
+  "parent_unit",
+  "order",
+  "content_items",
+  "description",
+  "competencies_addressed",
+  "real_world_connection",
+  "learning_objectives",
+  "estimated_duration",
+  "completion_criteria",
+  "status",
+  "certificate_on_completion"
+ ],
+ "fields": [
+  {
+   "fieldname": "description",
+   "fieldtype": "Text Editor",
+   "label": "Description"
+  },
+  {
+   "fieldname": "order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Order",
+   "reqd": 1
+  },
+  {
+   "fieldname": "competencies_addressed",
+   "fieldtype": "Table",
+   "label": "Competencies Addressed",
+   "options": "CompetencyList"
+  },
+  {
+   "fieldname": "real_world_connection",
+   "fieldtype": "Text",
+   "label": "Real World Connection"
+  },
+  {
+   "fieldname": "learning_objectives",
+   "fieldtype": "Table",
+   "label": "Learning Objectives",
+   "options": "UnitLearningObjective"
+  },
+  {
+   "fieldname": "estimated_duration",
+   "fieldtype": "Data",
+   "label": "Estimated Duration"
+  },
+  {
+   "fieldname": "completion_criteria",
+   "fieldtype": "Select",
+   "label": "Completion Criteria",
+   "options": "Complete_All_Units\nPass_Assessment\nSubmit_Project\nTime_Based"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPublished\nArchived"
+  },
+  {
+   "fieldname": "difficulty_tier",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Difficulty Tier",
+   "options": "Remedial\nBasic\nIntermediate\nAdvanced",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "certificate_on_completion",
+   "fieldtype": "Check",
+   "label": "Certificate on Completion"
+  },
+  {
+   "fieldname": "unit_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "unit_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Unit Type",
+   "options": "Module\nChapter\nLesson",
+   "reqd": 1
+  },
+  {
+   "fieldname": "parent_unit",
+   "fieldtype": "Link",
+   "label": "Parent_unit",
+   "options": "LearningUnit"
+  },
+  {
+   "fieldname": "content_items",
+   "fieldtype": "Table",
+   "label": "Content Items",
+   "options": "UnitContentItem"
+  },
+  {
+   "fieldname": "course_vertical",
+   "fieldtype": "Link",
+   "label": "Course Vertical",
+   "options": "Course Verticals"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-09-11 16:21:09.258790",
+ "modified_by": "Administrator",
+ "module": "TAP AI",
+ "name": "LearningUnit",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,59 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{language}-{translated_name}",
+ "creation": "2025-08-09 12:14:42.685706",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "language",
+  "translated_name",
+  "translated_content",
+  "translated_attachments",
+  "translation_status"
+ ],
+ "fields": [
+  {
+   "fieldname": "language",
+   "fieldtype": "Link",
+   "label": "Language",
+   "options": "TAP Language"
+  },
+  {
+   "fieldname": "translated_name",
+   "fieldtype": "Data",
+   "label": "Translated Name"
+  },
+  {
+   "fieldname": "translated_content",
+   "fieldtype": "Text Editor",
+   "label": "Translated Content"
+  },
+  {
+   "fieldname": "translated_attachments",
+   "fieldtype": "Attach",
+   "label": "Translated Attachments"
+  },
+  {
+   "fieldname": "translation_status",
+   "fieldtype": "Select",
+   "label": "Translation Status",
+   "options": "Draft\nCompleted\nin_Review"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-09-06 19:30:58.140694",
+ "modified_by": "Administrator",
+ "module": "TAP AI",
+ "name": "NoteTranslation",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
