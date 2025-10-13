@@ -19,21 +19,6 @@ def _read_site_config_from_frappe(fr):
     except Exception:
         return {}
 
-def _read_site_config_from_path() -> Dict[str, Any]:
-    """Optional fallback for microservice mode (no frappe import)."""
-    sites_dir = os.getenv("FRAPPE_SITES_DIR")
-    site_name = os.getenv("FRAPPE_SITE_NAME")
-    if not (sites_dir and site_name):
-        return {}
-    p = Path(sites_dir) / site_name / "site_config.json"
-    if not p.exists():
-        return {}
-    try:
-        with open(p, "r") as f:
-            return json.load(f) or {}
-    except Exception:
-        return {}
-
 class TAPConfig:
     """
     Config loader that prefers Frappe's site_config.json.
