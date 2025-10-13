@@ -2,46 +2,17 @@
 
 import frappe
 import json
-from typing import Dict, Any, List
-
-# Main entry point for the entire answering pipeline
+import uuid
 from tap_ai.services.router import answer as route_query
 from tap_ai.services.ratelimit import check_rate_limit
 
-# --- Resilient Cache Helper Functions ---
-def _get_history_from_cache(user_id: str) -> List[Dict[str, str]]:
-    """Safely retrieves and decodes chat history from the cache for a given user."""
-    try:
-        cache_key = f"chat_history_{user_id}"
-        cached_data = frappe.cache().get(cache_key)
-        if isinstance(cached_data, bytes):
-            cached_data = cached_data.decode('utf-8')
-        if isinstance(cached_data, str) and cached_data:
-            return json.loads(cached_data)
-        return []
-    except Exception as e:
-        frappe.log_error(f"Failed to retrieve chat history for {user_id}: {e}")
-        return []
-
-def _save_history_to_cache(user_id: str, history: List[Dict[str, str]]):
-    """Safely serializes and saves chat history to the cache."""
-    try:
-        cache_key = f"chat_history_{user_id}"
-        history_to_save = history[-10:]
-        frappe.cache().set(cache_key, json.dumps(history_to_save))
-    except Exception as e:
-        frappe.log_error(f"Failed to save chat history for {user_id}: {e}")
-        print(f"> [Warning] Failed to save chat history for user {user_id}")
-
-# --- API Endpoint ---
 @frappe.whitelist(methods=["POST"], allow_guest=True)
 def query():
     """
-    Public API endpoint for the conversational assistant.
-    Accepts a POST request with a JSON body containing 'q' and optional 'user_id'.
+    Query API: Accepts 'q' and optional 'user_id'.
+    Returns: request_id immediately. Actual answer is computed in the background.
     """
     user_id = frappe.session.user
-
     data = frappe.local.form_dict or {}
     q = data.get("q")
     
@@ -51,7 +22,7 @@ def query():
     if not q:
         frappe.throw("Missing required parameter in POST body: q (the user's question)")
 
-    # --- Rate Limiting ---
+    # Rate limiting 
     auth = frappe.get_request_header("Authorization") or ""
     api_key = None
     if auth.lower().startswith("token "):
@@ -72,18 +43,81 @@ def query():
             frappe.TooManyRequestsError,
         )
 
-    # --- Main Conversational Logic ---
-    chat_history = _get_history_from_cache(user_id)
-    out = route_query(q, history=chat_history)
-    
-    chat_history.append({"role": "user", "content": q})
-    chat_history.append({"role": "assistant", "content": out.get("answer", "")})
-    
-    _save_history_to_cache(user_id, chat_history)
+    # Generate request ID 
+    request_id = f"REQ_{uuid.uuid4().hex[:8]}"
 
-    # --- Format and Return Response ---
-    if hasattr(frappe.local, "response") and isinstance(frappe.local.response.headers, dict):
-        frappe.local.response.headers["X-RateLimit-Limit"] = 60
-        frappe.local.response.headers["X-RateLimit-Remaining"] = remaining
-    
-    return out
+    # Save request in cache as 'pending'
+    frappe.cache().set(request_id, json.dumps({
+        "status": "pending",
+        "answer": None,
+        "query": q,
+        "user_id": user_id,
+        "history": []
+    }))  
+
+    # Trigger background processing
+    frappe.enqueue("tap_ai.api.query._process_query",
+                   queue="long",
+                   timeout=300,
+                   request_id=request_id,
+                   query=q,
+                   user_id=user_id)
+
+    return {"request_id": request_id}
+
+
+def _process_query(request_id: str, query: str, user_id: str):
+    """Background job to compute the answer and update cache."""
+    import frappe, json
+    from tap_ai.services.router import answer as route_query
+
+    chat_history_key = f"chat_history_{user_id}"
+    chat_history = []
+
+    try:
+        # --- Fetch previous chat history safely ---
+        cached_history = frappe.cache().get(chat_history_key)
+        if cached_history:
+            if isinstance(cached_history, bytes):
+                cached_history = cached_history.decode("utf-8")
+            try:
+                chat_history = json.loads(cached_history)
+                if not isinstance(chat_history, list):
+                    chat_history = []
+            except Exception:
+                chat_history = []
+
+        # Call router/LLM logic 
+        out = route_query(query, history=chat_history)
+
+        # Update history (last 10 messages) 
+        chat_history.append({"role": "user", "content": query})
+        chat_history.append({"role": "assistant", "content": out.get("answer", "")})
+        frappe.cache().set(chat_history_key, json.dumps(chat_history[-10:]))
+
+        # Store routed_doctypes in cache with request
+        metadata = out.get("metadata", {})
+        routed_doctypes = metadata.get("routed_doctypes", [])
+
+        # Update request in cache as 'success'
+        frappe.cache().set(request_id, json.dumps({
+            "status": "success",
+            "answer": out.get("answer"),
+            "query": query,
+            "user_id": user_id,
+            "history": chat_history[-10:],  # last 10
+            "routed_doctypes": routed_doctypes
+        }))
+
+        frappe.log_error(f"_process_query success for {request_id}", "Query Debug")
+
+    except Exception as e:
+        frappe.cache().set(request_id, json.dumps({
+            "status": "failed",
+            "answer": None,
+            "query": query,
+            "user_id": user_id,
+            "error": str(e),
+            "history": chat_history[-10:]
+        }))
+        frappe.log_error(f"_process_query failed for {request_id}: {e}", "Query Debug")
