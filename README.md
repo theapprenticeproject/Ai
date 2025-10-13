@@ -162,7 +162,7 @@ Add the code for this AI engine to the tap_ai app directory.
 Finally, install the required Python libraries into the bench's virtual environment:
 
 ```bash
-bench pip install langchain-openai pinecone-client frappe-client
+bench pip install langchain-openai pinecone frappe-client
 ```
 
 ## ⚙️ Configuration
