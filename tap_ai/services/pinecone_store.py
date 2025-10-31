@@ -188,6 +188,7 @@ def upsert_doctype(
     flush()
     return {"doctype": doctype, "records_seen": total_records, "vectors_upserted": total_vectors}
 
+
 def upsert_all(
     doctypes: Optional[List[str]] = None,
     since: Optional[str] = None,
@@ -195,10 +196,15 @@ def upsert_all(
     embed_batch: int = 64,
 ) -> Dict[str, Any]:
     """Upsert multiple doctypes with user-friendly console logging."""
+    
     if doctypes is None:
+        # Load ALL doctypes from schema
         schema = load_schema()
-        doctypes = [t[3:] if t.startswith("tab") else t for t in schema.get("allowlist", [])]
-
+        doctypes = []
+        for table_name in schema.get("allowlist", []):
+            clean_name = table_name.replace("tab", "", 1) if table_name.startswith("tab") else table_name
+            doctypes.append(clean_name)
+    
     print(f"Starting upsert for {len(doctypes)} DocTypes...")
 
     out: Dict[str, Any] = {}
@@ -220,6 +226,7 @@ def upsert_all(
 
     print("\n--- Upsert process completed. ---")
     return out
+
 
 # --------- search ---------
 
