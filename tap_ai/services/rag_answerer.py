@@ -1,3 +1,9 @@
+# tap_ai/services/rag_answerer.py
+"""
+Vector RAG Engine - Enhanced with User Context
+Performs semantic search with grade/batch filtering for personalized results
+"""
+
 import json
 import time
 from typing import Dict, Any, List, Optional
@@ -6,11 +12,11 @@ import frappe
 from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
-# We no longer need the filter extractor
 from tap_ai.services.pinecone_store import search_auto_namespaces, get_db_columns_for_doctype
 from tap_ai.services.doctype_selector import pick_doctypes
 
-# --- NEW: LLM-based Query Refiner for Conversational Context ---
+
+# --- LLM-based Query Refiner for Conversational Context ---
 
 REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand, incorporating the necessary context from the history.
 
@@ -21,10 +27,12 @@ REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the f
 Return ONLY the refined, standalone question.
 """
 
+
 def _llm(model: str = "gpt-4o-mini", temperature: float = 0.2) -> ChatOpenAI:
     """Initializes the Language Model client."""
     api_key = get_config("openai_api_key")
     return ChatOpenAI(model_name=model, openai_api_key=api_key, temperature=temperature, max_tokens=1500)
+
 
 def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:
     """Uses an LLM to create a standalone query from a follow-up question and history."""
@@ -32,7 +40,6 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
         return query
 
     llm = _llm(temperature=0.0)
-    # Format the history for the prompt
     formatted_history = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
     
     user_prompt = (
@@ -55,138 +62,300 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
 
 def _record_to_text(doctype: str, row: Dict[str, Any]) -> str:
     """Flattens a record to a text block, giving weight to the title field."""
+    all_cols = get_db_columns_for_doctype(doctype)
+    title_field = None
+    for candidate in ["title", "name1", "video_name", "quiz_name", "assignment_name", "subject"]:
+        if candidate in all_cols:
+            title_field = candidate
+            break
+    
     parts = []
-    meta = frappe.get_meta(doctype)
-    title_field, title_value = None, None
-    official_title_field = meta.title_field
-    if official_title_field and official_title_field in row and row[official_title_field]:
-        title_field, title_value = official_title_field, row[official_title_field]
-    else:
-        fallback_fields = ['title', 'name1', 'video_name', 'assignment_name', 'project_name', 'quiz_name', 'objective_name', 'unit_name', 'comp_name', 'note_name']
-        for field in fallback_fields:
-            if field in row and row[field]:
-                title_field, title_value = field, row[field]
-                break
-    if title_field and title_value:
-        title_label = meta.get_field(title_field).label or title_field.replace("_", " ").title()
-        parts.append(f"{title_label}: {title_value}")
-    parts.append(f"DocType: {doctype}")
-    parts.append(f"ID: {row.get('name','')}")
+    if title_field and row.get(title_field):
+        parts.append(f"{title_field.upper()}: {row[title_field]}")
+    
     for k, v in row.items():
-        if k in ('name', title_field) or v in (None, ""): continue
-        v_str = v.isoformat() if hasattr(v, 'isoformat') else str(v)
-        parts.append(f"{k}: {v_str}")
+        if k == title_field:
+            continue
+        if v and str(v).strip():
+            parts.append(f"{k}: {v}")
+    
     return "\n".join(parts)
 
 
-def _build_context_from_hits(hits: List[Dict[str, Any]], max_chars: int = 12000) -> Dict[str, Any]:
-    """Builds context by fetching full records from Frappe DB based on Pinecone hit metadata."""
-    context_chunks: List[str] = []
-    sources: List[Dict[str, Any]] = []
-    used_chars = 0
+def _build_metadata_filter(
+    user_profile: Optional[Dict] = None,
+    content_details: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Builds Pinecone metadata filter based on user context.
     
-    for h in hits:
-        meta = h.get("metadata") or {}
-        doctype = meta.get("doctype")
-        record_ids = meta.get("record_ids", [])
-        
-        if not doctype or not record_ids: continue
+    Args:
+        user_profile: User profile with grade, batch, etc.
+        content_details: Content details
+    
+    Returns:
+        Metadata filter dictionary for Pinecone query
+    """
+    filters = {}
+    
+    # Add grade filter
+    if user_profile and user_profile.get('grade'):
+        filters['grade'] = user_profile['grade']
+        print(f"> Applying grade filter: {user_profile['grade']}")
+    
+    # Add batch filter
+    if user_profile and user_profile.get('batch'):
+        filters['batch'] = user_profile['batch']
+        print(f"> Applying batch filter: {user_profile['batch']}")
+    
+    # Add course filter from enrollment
+    if user_profile and user_profile.get('current_enrollment'):
+        enrollment = user_profile['current_enrollment']
+        if enrollment.get('course'):
+            filters['course'] = enrollment['course']
+            print(f"> Applying course filter: {enrollment['course']}")
+    
+    # Add content type filter
+    if content_details and content_details.get('type'):
+        filters['content_type'] = content_details['type']
+        print(f"> Applying content type filter: {content_details['type']}")
+    
+    return filters if filters else None
 
-        try:
-            fields = get_db_columns_for_doctype(doctype)
-            rows = frappe.get_all(doctype, filters={"name": ("in", record_ids)}, fields=fields) or []
-            
-            for row in rows:
-                text_chunk = _record_to_text(doctype, row)
-                if used_chars + len(text_chunk) > max_chars:
-                    break
-                
-                context_chunks.append(text_chunk)
-                sources.append({"doctype": doctype, "id": row.get("name"), "score": h.get("score")})
-                used_chars += len(text_chunk)
-        
-        except Exception as e:
-            frappe.log_error(f"Failed to fetch records for context building: {e}")
 
-        if used_chars >= max_chars: break
-            
-    return {"context_text": "\n\n---\n\n".join(context_chunks), "sources": sources}
+def _synthesize_answer_with_context(
+    query: str,
+    context_records: List[str],
+    user_profile: Optional[Dict] = None,
+    content_details: Optional[Dict] = None,
+    history: Optional[List[Dict[str, str]]] = None
+) -> str:
+    """
+    Synthesizes a final answer using retrieved context with user personalization.
+    
+    Args:
+        query: User's question
+        context_records: Retrieved text records from Pinecone
+        user_profile: User profile for personalization
+        content_details: Content details
+        history: Conversation history
+    
+    Returns:
+        Synthesized natural language answer
+    """
+    llm = _llm()
+    
+    # Build user context string
+    user_context_str = ""
+    if user_profile:
+        context_parts = [f"User: {user_profile.get('name', 'Student')}"]
+        if user_profile.get('grade'):
+            context_parts.append(f"Grade {user_profile['grade']}")
+        if user_profile.get('batch'):
+            context_parts.append(f"Batch {user_profile['batch']}")
+        if user_profile.get('current_enrollment'):
+            enrollment = user_profile['current_enrollment']
+            if enrollment.get('course'):
+                context_parts.append(f"Course: {enrollment['course']}")
+        user_context_str = " | ".join(context_parts)
+    
+    # Build content context string
+    content_context_str = ""
+    if content_details:
+        content_context_str = f"Content: {content_details.get('title')} (Type: {content_details.get('type')})"
+    
+    system_prompt = """You are a helpful educational assistant.
+    
+You will be given:
+1. A user's question
+2. User context (name, grade, batch, course)
+3. Relevant educational content retrieved from a database
+4. Optional conversation history
 
-def answer_from_pinecone(
-    q: str,
-    k: int = 8,
-    route_top_n: int = 4,
-    chat_history: Optional[List[Dict[str, str]]] = None
-) -> Dict[str, Any]:
-    t0 = time.time()
-    history = chat_history or []
+Your job is to synthesize a clear, friendly, and educational answer that:
+- Directly answers the user's question
+- Is appropriate for the user's grade level
+- Uses the retrieved content as supporting evidence
+- References specific content when relevant
+- Is personalized for the user
 
-    # 1. Refine the query to be context-aware before doing anything else.
-    refined_query_for_search = _refine_query_with_history(q, history)
-
-    # 2. Use the refined query for both routing and searching (NO FILTERS).
-    routed = search_auto_namespaces(q=refined_query_for_search, k=k, route_top_n=route_top_n)
-    matches = routed.get("matches") or []
-
-    # 3. Build context from DB hits (two-step fetch).
-    ctx = _build_context_from_hits(matches)
-    context_text = ctx["context_text"]
-    sources = ctx["sources"]
-
-    if not context_text.strip():
-        return {
-            "question": q,
-            "answer": "I don't have enough context in the knowledge base to answer that.",
-            "success": True,
-            "engine": "rag-pinecone",
-            "execution_time": time.time() - t0,
-            "metadata": {
-                "refined_query_for_search": refined_query_for_search,
-                "routed_doctypes": routed.get("routed_doctypes"),
-                "sources": [],
-            },
-        }
-
-    # 4. Use the original query and full history for the final answer synthesis.
-    synthesis_llm = _llm()
-    system_prompt = (
-        "You are a helpful assistant. Answer the user's FINAL question based ONLY on the provided CONTEXT and CHAT HISTORY.\n"
-        #"If the context is insufficient, say you don't know. Be concise."
+Keep your answer concise but informative."""
+    
+    # Build context records string
+    context_str = "\n\n---\n\n".join(context_records[:10])  # Use top 10 results
+    
+    # Build user prompt
+    user_prompt_parts = []
+    
+    if history:
+        history_str = "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in history])
+        user_prompt_parts.append(f"CONVERSATION HISTORY:\n{history_str}\n")
+    
+    if user_context_str:
+        user_prompt_parts.append(f"USER CONTEXT: {user_context_str}\n")
+    
+    if content_context_str:
+        user_prompt_parts.append(f"CONTENT CONTEXT: {content_context_str}\n")
+    
+    user_prompt_parts.append(f"USER'S QUESTION: {query}\n")
+    user_prompt_parts.append(f"RETRIEVED CONTEXT (from database):\n{context_str}\n")
+    user_prompt_parts.append(
+        "Please provide a clear, friendly answer that's personalized for this user's grade level. "
+        "Reference specific content from the context when relevant."
     )
     
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({
-        "role": "user",
-        "content": f"CONTEXT:\n{context_text}\n\nBased on the context, answer this question:\n{q}"
-    })
-
-    resp = synthesis_llm.invoke(messages)
-    answer = getattr(resp, "content", "Could not synthesize an answer.").strip()
-
-    answer = answer.replace('\\u20b9', '₹')
+    user_prompt = "\n".join(user_prompt_parts)
     
-    out = {
-        "question": q,
-        "answer": answer,
-        "success": True,
-        "engine": "rag-pinecone",
-        "execution_time": time.time() - t0,
-        "metadata": {
-            "refined_query_for_search": refined_query_for_search,
-            "routed_doctypes": routed.get("routed_doctypes"),
-            "sources": sources,
-        },
-    }
-    return out
+    try:
+        resp = llm.invoke([("system", system_prompt), ("user", user_prompt)])
+        return getattr(resp, "content", "I couldn't find a good answer.").strip()
+    except Exception as e:
+        frappe.log_error(f"RAG answer synthesis failed: {e}")
+        return "There was an error while formulating an answer."
 
 
-# -------- Bench CLI --------
-def cli(q: str, k: int = 8, route_top_n: int = 4):
+# --- Main Function (ENHANCED) ---
+
+def answer_from_pinecone(
+    query: str,
+    user_profile: Optional[Dict[str, Any]] = None,
+    content_details: Optional[Dict[str, Any]] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
     """
-    Bench command to test the RAG pipeline.
-
-    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points'}"
-    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Can you provide a summary of the video titled Needs First, Wants Later (2024)'}"
+    Main Vector RAG entry point with user context and grade filtering.
+    
+    Args:
+        query: Natural language question
+        user_profile: User profile from DynamicConfig.get_user_profile()
+            Contains: name, batch, grade, enrollments, current_enrollment
+        content_details: Content details for content-specific queries
+        chat_history: Conversation history
+    
+    Returns:
+        Dictionary with answer, context used, and success flag
     """
-    return answer_from_pinecone(q=q, k=k, route_top_n=route_top_n)
+    chat_history = chat_history or []
+    start_time = time.time()
+    
+    print("> Starting Vector RAG process...")
+    if user_profile:
+        print(f"> User Context: {user_profile.get('name')} | Grade {user_profile.get('grade')} | Batch {user_profile.get('batch')}")
+    
+    # Step 1: Refine query with conversation history
+    refined_query = _refine_query_with_history(query, chat_history)
+    
+    # Step 2: Select relevant DocTypes
+    try:
+        selected_doctypes = pick_doctypes(refined_query, top_n=5)
+        print(f"> Selected DocTypes: {selected_doctypes}")
+    except Exception as e:
+        frappe.log_error(f"DocType selection failed: {e}")
+        selected_doctypes = ["VideoClass", "Quiz", "Assignment"]  # Fallback
+    
+    # Step 3: Build metadata filter for grade/batch
+    metadata_filter = _build_metadata_filter(user_profile, content_details)
+    
+    # Step 4: Search Pinecone with filters
+    try:
+        # Note: search_auto_namespaces needs to be updated to accept metadata_filter
+        # For now, we'll search without filter and filter results manually if needed
+        raw_results = search_auto_namespaces(
+            refined_query,
+            selected_doctypes,
+            top_k=15  # Get more results for filtering
+        )
+        
+        if not raw_results:
+            return {
+                "question": query,
+                "answer": "I couldn't find relevant information in the database.",
+                "context_used": [],
+                "success": False
+            }
+        
+        print(f"> Retrieved {len(raw_results)} results from Pinecone.")
+        
+        # Step 5: Manual grade filtering if needed
+        # (This is a temporary solution until search_auto_namespaces supports metadata filtering)
+        filtered_results = raw_results
+        if user_profile and user_profile.get('grade'):
+            user_grade = str(user_profile['grade'])
+            # Filter results that match user's grade or are grade-agnostic
+            filtered_results = []
+            for result in raw_results:
+                result_grade = result.get('metadata', {}).get('grade')
+                # Include if no grade specified (general content) or if grade matches
+                if not result_grade or str(result_grade) == user_grade:
+                    filtered_results.append(result)
+            
+            if filtered_results:
+                print(f"> Filtered to {len(filtered_results)} grade-appropriate results (Grade {user_grade}).")
+            else:
+                # If no exact matches, use all results but note this in response
+                filtered_results = raw_results
+                print(f"> No exact grade match, using all {len(raw_results)} results.")
+        
+        # Step 6: Extract text records
+        context_records = []
+        for res in filtered_results[:10]:  # Use top 10
+            metadata = res.get("metadata", {})
+            doctype = metadata.get("doctype", "Unknown")
+            doc_name = metadata.get("doc_name", "")
+            
+            # Get the actual record if available
+            if doctype and doc_name:
+                try:
+                    record = frappe.get_doc(doctype, doc_name).as_dict()
+                    text_block = _record_to_text(doctype, record)
+                    context_records.append(text_block)
+                except Exception as e:
+                    # If can't fetch record, use metadata
+                    text_block = "\n".join([f"{k}: {v}" for k, v in metadata.items()])
+                    context_records.append(text_block)
+            else:
+                # Use metadata directly
+                text_block = "\n".join([f"{k}: {v}" for k, v in metadata.items()])
+                context_records.append(text_block)
+        
+        if not context_records:
+            return {
+                "question": query,
+                "answer": "I found results but couldn't extract meaningful content.",
+                "context_used": [],
+                "success": False
+            }
+        
+        # Step 7: Synthesize answer with user context
+        final_answer = _synthesize_answer_with_context(
+            query,
+            context_records,
+            user_profile,
+            content_details,
+            chat_history
+        )
+        
+        elapsed = time.time() - start_time
+        print(f"> RAG completed in {elapsed:.2f}s")
+        
+        return {
+            "question": query,
+            "answer": final_answer,
+            "context_used": context_records[:5],  # Return top 5 for reference
+            "num_results": len(filtered_results),
+            "success": True,
+            "user_context": {
+                "batch": user_profile.get('batch') if user_profile else None,
+                "grade": user_profile.get('grade') if user_profile else None,
+                "filtered_by_grade": len(filtered_results) != len(raw_results)
+            }
+        }
+        
+    except Exception as e:
+        frappe.log_error(f"Pinecone search failed: {e}")
+        return {
+            "question": query,
+            "answer": f"An error occurred while searching: {str(e)}",
+            "context_used": [],
+            "success": False
+        }

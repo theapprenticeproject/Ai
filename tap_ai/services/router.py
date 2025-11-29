@@ -1,6 +1,8 @@
 # tap_ai/services/router.py
-# Final version with automatic, resilient chat history management.
-# MODIFIED to include a user-friendly message during the fallback process.
+"""
+TAP AI Router - Enhanced with Dynamic Configuration Support
+Routes queries to Text-to-SQL or Vector RAG with full user context
+"""
 
 import json
 from typing import Dict, Any, List, Optional
@@ -14,7 +16,7 @@ from tap_ai.services.sql_answerer import answer_from_sql
 from tap_ai.services.rag_answerer import answer_from_pinecone
 
 
-# --- LLM-based Tool Chooser (Unchanged) ---
+# --- LLM-based Tool Chooser ---
 
 ROUTER_PROMPT = """You are a query routing expert. Your job is to determine the best tool to answer a user's question based on its intent.
 
@@ -37,10 +39,26 @@ def _llm() -> ChatOpenAI:
     model = get_config("primary_llm_model") or "gpt-4o-mini"
     return ChatOpenAI(model_name=model, openai_api_key=api_key, temperature=0.0)
 
-def choose_tool(query: str) -> str:
-    """Uses an LLM to decide which tool (SQL or Vector Search) is best for the query."""
+
+def choose_tool(query: str, user_context: Optional[str] = None) -> str:
+    """
+    Uses an LLM to decide which tool (SQL or Vector Search) is best for the query.
+    
+    Args:
+        query: The user's question
+        user_context: Optional context about the user (grade, batch, etc.)
+    
+    Returns:
+        Tool name: 'text_to_sql' or 'vector_search'
+    """
     llm = _llm()
-    user_prompt = f"USER QUESTION:\n{query}\n\nWhich tool should be used to answer this?"
+    
+    user_prompt = f"USER QUESTION:\n{query}"
+    if user_context:
+        user_prompt = f"USER CONTEXT:\n{user_context}\n\n{user_prompt}"
+    
+    user_prompt += "\n\nWhich tool should be used to answer this?"
+    
     try:
         resp = llm.invoke([("system", ROUTER_PROMPT), ("user", user_prompt)])
         content = getattr(resp, "content", "")
@@ -53,125 +71,219 @@ def choose_tool(query: str) -> str:
             return tool_choice
     except Exception as e:
         frappe.log_error(f"Tool router failed: {e}")
+    
     print("> Router failed, defaulting to vector_search.")
     return "vector_search"
 
 
-# --- Main Answer Function (MODIFIED) ---
+# --- Main Answer Function (ENHANCED with User Context) ---
 
-def answer(q: str, history: Optional[List[Dict[str, str]]] = None) -> dict:
-    current_query = q
-    primary_tool = choose_tool(current_query)
+def process_query(
+    query: str,
+    user_profile: Optional[Dict[str, Any]] = None,
+    content_details: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+    history: Optional[List[Dict[str, str]]] = None
+) -> dict:
+    """
+    Main entry point for processing queries with full user context.
+    
+    Args:
+        query: The user's question
+        user_profile: User profile from DynamicConfig.get_user_profile()
+            Contains: name, phone, batch, grade, enrollments, current_enrollment
+        content_details: Content details from get_content_details()
+            Contains: id, title, duration, difficulty, etc.
+        context: Additional context dictionary
+        history: Conversation history
+    
+    Returns:
+        Dictionary with answer, metadata, and tool used
+    """
+    current_query = query
+    chat_history = history or []
+    
+    # Build enriched user context for better routing and responses
+    user_context_str = None
+    if user_profile:
+        context_parts = [f"User: {user_profile.get('name', 'Unknown')}"]
+        
+        if user_profile.get('grade'):
+            context_parts.append(f"Grade: {user_profile['grade']}")
+        
+        if user_profile.get('batch'):
+            context_parts.append(f"Batch: {user_profile['batch']}")
+        
+        # Add enrollment info if available
+        if user_profile.get('current_enrollment'):
+            enrollment = user_profile['current_enrollment']
+            if enrollment.get('course'):
+                context_parts.append(f"Course: {enrollment['course']}")
+            if enrollment.get('school'):
+                context_parts.append(f"School: {enrollment['school']}")
+        
+        user_context_str = " | ".join(context_parts)
+        print(f"> User Context: {user_context_str}")
+    
+    # Add content context if available
+    if content_details:
+        content_context = f"Content: {content_details.get('title', 'Unknown')}"
+        if content_details.get('type'):
+            content_context += f" (Type: {content_details['type']})"
+        print(f"> Content Context: {content_context}")
+        if user_context_str:
+            user_context_str += f"\n{content_context}"
+        else:
+            user_context_str = content_context
+    
+    # Choose tool with enhanced context
+    primary_tool = choose_tool(current_query, user_context_str)
     print(f"> Selected Primary Tool: {primary_tool}")
 
     result = {}
     fallback_used = False
-    chat_history = history or []
 
     if primary_tool == "text_to_sql":
-        result = answer_from_sql(current_query, chat_history=chat_history)
+        result = answer_from_sql(
+            current_query,
+            user_profile=user_profile,
+            content_details=content_details,
+            chat_history=chat_history
+        )
+        
         if _is_failure(result):
             print("> Text-to-SQL failed. Falling back to Vector Search...")
             fallback_used = True
-            # Set an interim message to be sent to the user by the client.
             interim_message = "Searching, please wait a few more seconds..."
-            result = answer_from_pinecone(current_query, chat_history=chat_history)
-            # Add the message to the final result dictionary.
+            result = answer_from_pinecone(
+                current_query,
+                user_profile=user_profile,
+                content_details=content_details,
+                chat_history=chat_history
+            )
             result['interim_message'] = interim_message
     else:
         primary_tool = "vector_search"
-        result = answer_from_pinecone(current_query, chat_history=chat_history)
+        result = answer_from_pinecone(
+            current_query,
+            user_profile=user_profile,
+            content_details=content_details,
+            chat_history=chat_history
+        )
 
     return _with_meta(result, current_query, primary=primary_tool, fallback=fallback_used)
 
 
-# --- Helper functions (Unchanged) ---
+# --- Backward Compatibility Wrapper ---
+
+def answer(q: str, history: Optional[List[Dict[str, str]]] = None) -> dict:
+    """
+    Backward compatibility wrapper for old function signature.
+    
+    This maintains compatibility with existing code that calls answer()
+    without user context. New code should use process_query() instead.
+    
+    Args:
+        q: Query string
+        history: Optional conversation history
+    
+    Returns:
+        Query result dictionary
+    """
+    print("> WARNING: Using legacy answer() function without user context.")
+    print("> Consider updating to process_query() for personalized responses.")
+    return process_query(q, user_profile=None, content_details=None, history=history)
+
+
+# --- Helper functions ---
 
 def _is_failure(res: dict) -> bool:
     """Robust failure detector."""
-    if not res: return True
-    if res.get("success") is False: return True
-    text = (res.get("answer") or "").strip().lower()
-    bad_phrases = ("i don't know", "unable to", "cannot", "no answer", "failed", "error", "could not generate a valid sql")
-    if any(p in text for p in bad_phrases): return True
-    return False
-
-def _with_meta(res: dict, original_query: str, primary: str, fallback: bool) -> dict:
-    res.setdefault("metadata", {})
-    res["metadata"].update({
-        "original_query": original_query,
-        "primary_engine": primary,
-        "fallback_used": fallback,
-    })
-    if "routed_doctypes" in (res.get("metadata") or {}):
-        res["metadata"]["doctypes_used"] = res["metadata"]["routed_doctypes"]
-    return res
-
-# --- Resilient Cache & CLI ---
-
-def _get_history_from_cache(user_id: str) -> List[Dict[str, str]]:
-    try:
-        cache_key = f"chat_history_{user_id}"
-        cached_data = frappe.cache().get(cache_key)
-        if isinstance(cached_data, bytes):
-            cached_data = cached_data.decode('utf-8')
-        if isinstance(cached_data, str) and cached_data:
-            return json.loads(cached_data)
-        return []
-    except Exception as e:
-        print(f"> [Warning] Failed to retrieve or parse chat history from cache: {e}")
-        return []
-
-def _save_history_to_cache(user_id: str, history: List[Dict[str, str]]):
-    try:
-        cache_key = f"chat_history_{user_id}"
-        history_to_save = history[-10:]
-        frappe.cache().set(cache_key, json.dumps(history_to_save))
-    except Exception as e:
-        print(f"\n> [Warning] Failed to save chat history to cache: {e}")
-        print("> Conversation memory will not be available for the next turn.")
+    if not res:
+        return True
+    if res.get("success") is False:
+        return True
+    answer = res.get("answer", "")
+    if not answer or len(answer.strip()) < 10:
+        return True
+    # Check for explicit error indicators
+    error_phrases = [
+        "could not generate",
+        "failed to execute",
+        "no results",
+        "error occurred",
+        "unable to",
+    ]
+    answer_lower = answer.lower()
+    return any(phrase in answer_lower for phrase in error_phrases)
 
 
-# --- Bench CLI (HAVING RESILIENT HISTORY) ---
-def cli(q: str, user_id: str = "default_user"):
-    '''
-    Automatically manages conversation history in the Frappe cache with error handling.
+def _with_meta(result: dict, query: str, primary: str, fallback: bool) -> dict:
+    """Adds metadata to the result."""
+    result["query"] = query
+    result["tool_used"] = primary
+    result["fallback_used"] = fallback
+    return result
 
-    Turn 1:
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos with basic difficulty', 'user_id':'user123'}"
 
-    Turn 2 (Follow-up, no history needed):
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'summarize the first one', 'user_id':'user123'}"
+# --- CLI for Testing ---
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list all the videos with easy difficulty', 'user_id':'user123'}"
-
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list all the activities present', 'user_id':'user123'}"
-
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points', 'user_id':'user123'}"
+def cli(q: str = None, user_id: str = "test_user", **kwargs):
+    """
+    Command-line interface for testing with automatic history management.
     
-    '''
-    # 1. Get history safely
-    history = _get_history_from_cache(user_id)
+    Usage:
+        # Simple query
+        bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos', 'user_id':'test_user_1'}"
+        
+        # With user context
+        bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos', 'user_id':'student123', 'user_type':'student', 'glific_id':'12345'}"
     
-    # 2. Call the main answer function
-    out = answer(q, history=history)
-    # Handle the interim message for the CLI demo to simulate the bot's behavior.
-    if "interim_message" in out:
-        print("\n--- INTERIM MESSAGE (Simulating Bot Message) ---")
-        print(out['interim_message'])    
+    Args:
+        q: Query string
+        user_id: Unique user ID for conversation tracking
+        **kwargs: Additional parameters like user_type, glific_id, etc.
+    """
+    if not q:
+        print("ERROR: No query provided. Use: --kwargs \"{'q':'your question', 'user_id':'user123'}\"")
+        return None
+
+    import hashlib
+    cache_key = f"chat_history:{hashlib.md5(user_id.encode()).hexdigest()}"
+
+    # Load conversation history
+    history = frappe.cache().get_value(cache_key) or []
+    print(f"\n> User: {user_id}")
+    print(f"> Loaded {len(history)} previous turn(s) from cache.")
     
-    # 3. Update the history list
+    # Get user profile if user_type and glific_id provided
+    user_profile = None
+    if kwargs.get('user_type') and kwargs.get('glific_id'):
+        from tap_ai.utils.dynamic_config import DynamicConfig
+        user_profile = DynamicConfig.get_user_profile(
+            kwargs['user_type'],
+            kwargs['glific_id'],
+            kwargs.get('batch_id')
+        )
+        if user_profile:
+            print(f"> User Profile: {user_profile.get('name')} (Grade {user_profile.get('grade')}, Batch {user_profile.get('batch')})")
+
+    # Process query with context
+    result = process_query(q, user_profile=user_profile, history=history)
+
+    # Update history
     history.append({"role": "user", "content": q})
-    history.append({"role": "assistant", "content": out.get("answer", "")})
-    
-    # 4. Save history safely
-    _save_history_to_cache(user_id, history)
+    history.append({"role": "assistant", "content": result.get("answer", "")})
+    frappe.cache().set_value(cache_key, history, expires_in_sec=3600)
 
-    # Final, user-friendly print
-    json_output_with_unicode = json.dumps(out, indent=2, default=str)
-    final_output = json_output_with_unicode.replace('\\u20b9', '₹')
-    
-    print("\n--- CONVERSATION TURN ---")
-    print(final_output)
-    
-    return out
+    # Display results
+    print("\n" + "="*70)
+    print(f"QUESTION: {result.get('query')}")
+    print(f"TOOL USED: {result.get('tool_used')}")
+    if result.get('fallback_used'):
+        print("(Fallback was used)")
+    print("-"*70)
+    print(f"ANSWER:\n{result.get('answer')}")
+    print("="*70 + "\n")
+
+    return result
