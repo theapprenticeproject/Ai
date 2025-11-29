@@ -8,7 +8,12 @@
   "section_break_vzok",
   "enabled",
   "doctype_mappings",
-  "user_type_config"
+  "user_type_config",
+  "context_resolution_rules",
+  "response_templates",
+  "cache_ttl",
+  "enable_logging",
+  "fallback_behavior"
  ],
  "fields": [
   {
@@ -31,13 +36,40 @@
    "fieldname": "user_type_config",
    "fieldtype": "JSON",
    "label": "User Type Config"
+  },
+  {
+   "fieldname": "context_resolution_rules",
+   "fieldtype": "JSON",
+   "label": "Context Resolution Logic"
+  },
+  {
+   "fieldname": "response_templates",
+   "fieldtype": "JSON",
+   "label": "Response Templates"
+  },
+  {
+   "default": "300",
+   "fieldname": "cache_ttl",
+   "fieldtype": "Data",
+   "label": "Cache TTL"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_logging",
+   "fieldtype": "Check",
+   "label": "Enable Debug Logging"
+  },
+  {
+   "fieldname": "fallback_behavior",
+   "fieldtype": "JSON",
+   "label": "Fallback Behavior"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-11-25 16:37:52.295701",
+ "modified": "2025-11-29 15:58:37.518532",
  "modified_by": "Administrator",
  "module": "Tap AI",
  "name": "AI Integration Config",
