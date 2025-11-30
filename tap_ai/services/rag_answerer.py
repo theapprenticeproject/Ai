@@ -2,6 +2,7 @@
 """
 Vector RAG Engine - Enhanced with User Context
 Performs semantic search with grade/batch filtering for personalized results
+FINAL FIX: Correct search_auto_namespaces call signature
 """
 
 import json
@@ -13,7 +14,6 @@ from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
 from tap_ai.services.pinecone_store import search_auto_namespaces, get_db_columns_for_doctype
-from tap_ai.services.doctype_selector import pick_doctypes
 
 
 # --- LLM-based Query Refiner for Conversational Context ---
@@ -89,36 +89,28 @@ def _build_metadata_filter(
     """
     Builds Pinecone metadata filter based on user context.
     
-    Args:
-        user_profile: User profile with grade, batch, etc.
-        content_details: Content details
-    
-    Returns:
-        Metadata filter dictionary for Pinecone query
+    NOTE: Currently building filter but search_auto_namespaces may not fully support it.
+    This is prepared for future enhancement.
     """
     filters = {}
     
-    # Add grade filter
     if user_profile and user_profile.get('grade'):
         filters['grade'] = user_profile['grade']
-        print(f"> Applying grade filter: {user_profile['grade']}")
+        print(f"> Grade filter prepared: {user_profile['grade']}")
     
-    # Add batch filter
     if user_profile and user_profile.get('batch'):
         filters['batch'] = user_profile['batch']
-        print(f"> Applying batch filter: {user_profile['batch']}")
+        print(f"> Batch filter prepared: {user_profile['batch']}")
     
-    # Add course filter from enrollment
     if user_profile and user_profile.get('current_enrollment'):
         enrollment = user_profile['current_enrollment']
         if enrollment.get('course'):
             filters['course'] = enrollment['course']
-            print(f"> Applying course filter: {enrollment['course']}")
+            print(f"> Course filter prepared: {enrollment['course']}")
     
-    # Add content type filter
     if content_details and content_details.get('type'):
         filters['content_type'] = content_details['type']
-        print(f"> Applying content type filter: {content_details['type']}")
+        print(f"> Content type filter prepared: {content_details['type']}")
     
     return filters if filters else None
 
@@ -130,19 +122,7 @@ def _synthesize_answer_with_context(
     content_details: Optional[Dict] = None,
     history: Optional[List[Dict[str, str]]] = None
 ) -> str:
-    """
-    Synthesizes a final answer using retrieved context with user personalization.
-    
-    Args:
-        query: User's question
-        context_records: Retrieved text records from Pinecone
-        user_profile: User profile for personalization
-        content_details: Content details
-        history: Conversation history
-    
-    Returns:
-        Synthesized natural language answer
-    """
+    """Synthesizes a final answer using retrieved context with user personalization."""
     llm = _llm()
     
     # Build user context string
@@ -181,8 +161,9 @@ Your job is to synthesize a clear, friendly, and educational answer that:
 
 Keep your answer concise but informative."""
     
-    # Build context records string
-    context_str = "\n\n---\n\n".join(context_records[:10])  # Use top 10 results
+    # Build context records string (safe slicing)
+    safe_records = context_records[:min(10, len(context_records))] if isinstance(context_records, list) else []
+    context_str = "\n\n---\n\n".join(safe_records)
     
     # Build user prompt
     user_prompt_parts = []
@@ -245,28 +226,30 @@ def answer_from_pinecone(
     # Step 1: Refine query with conversation history
     refined_query = _refine_query_with_history(query, chat_history)
     
-    # Step 2: Select relevant DocTypes
-    try:
-        selected_doctypes = pick_doctypes(refined_query, top_n=5)
-        print(f"> Selected DocTypes: {selected_doctypes}")
-    except Exception as e:
-        frappe.log_error(f"DocType selection failed: {e}")
-        selected_doctypes = ["VideoClass", "Quiz", "Assignment"]  # Fallback
-    
-    # Step 3: Build metadata filter for grade/batch
+    # Step 2: Build metadata filter for grade/batch
     metadata_filter = _build_metadata_filter(user_profile, content_details)
     
-    # Step 4: Search Pinecone with filters
+    # Step 3: Search Pinecone
+    # NOTE: search_auto_namespaces already calls pick_doctypes internally!
+    # Signature: search_auto_namespaces(q: str, k: int = 8, route_top_n: int = 4, filters: Optional[Dict] = None)
     try:
-        # Note: search_auto_namespaces needs to be updated to accept metadata_filter
-        # For now, we'll search without filter and filter results manually if needed
-        raw_results = search_auto_namespaces(
-            refined_query,
-            selected_doctypes,
-            top_k=15  # Get more results for filtering
+        print("> Calling Pinecone search...")
+        search_result = search_auto_namespaces(
+            q=refined_query,
+            k=15,  # Return top 15 results
+            route_top_n=5,  # Route to top 5 doctypes
+            filters=metadata_filter  # Optional metadata filters
         )
         
-        if not raw_results:
+        # search_auto_namespaces returns a dict with structure:
+        # {"q": str, "routed_doctypes": list, "k": int, "matches": list}
+        routed_doctypes = search_result.get("routed_doctypes", [])
+        all_matches = search_result.get("matches", [])
+        
+        print(f"> Routed to DocTypes: {routed_doctypes}")
+        print(f"> Retrieved {len(all_matches)} results from Pinecone.")
+        
+        if not all_matches:
             return {
                 "question": query,
                 "answer": "I couldn't find relevant information in the database.",
@@ -274,47 +257,55 @@ def answer_from_pinecone(
                 "success": False
             }
         
-        print(f"> Retrieved {len(raw_results)} results from Pinecone.")
+        # Step 4: Manual grade filtering on results
+        filtered_results = list(all_matches)  # Start with all results
         
-        # Step 5: Manual grade filtering if needed
-        # (This is a temporary solution until search_auto_namespaces supports metadata filtering)
-        filtered_results = raw_results
         if user_profile and user_profile.get('grade'):
             user_grade = str(user_profile['grade'])
-            # Filter results that match user's grade or are grade-agnostic
-            filtered_results = []
-            for result in raw_results:
-                result_grade = result.get('metadata', {}).get('grade')
+            temp_filtered = []
+            
+            for result in all_matches:
+                if not isinstance(result, dict):
+                    continue
+                    
+                metadata = result.get('metadata', {})
+                result_grade = metadata.get('grade')
+                
                 # Include if no grade specified (general content) or if grade matches
                 if not result_grade or str(result_grade) == user_grade:
-                    filtered_results.append(result)
+                    temp_filtered.append(result)
             
-            if filtered_results:
+            if temp_filtered:
+                filtered_results = temp_filtered
                 print(f"> Filtered to {len(filtered_results)} grade-appropriate results (Grade {user_grade}).")
             else:
-                # If no exact matches, use all results but note this in response
-                filtered_results = raw_results
-                print(f"> No exact grade match, using all {len(raw_results)} results.")
+                print(f"> No exact grade match, using all {len(all_matches)} results.")
         
-        # Step 6: Extract text records
+        # Step 5: Extract text records (safe iteration)
         context_records = []
-        for res in filtered_results[:10]:  # Use top 10
-            metadata = res.get("metadata", {})
+        max_records = min(10, len(filtered_results))
+        
+        for i in range(max_records):
+            result = filtered_results[i]
+            if not isinstance(result, dict):
+                continue
+                
+            metadata = result.get("metadata", {})
             doctype = metadata.get("doctype", "Unknown")
             doc_name = metadata.get("doc_name", "")
             
-            # Get the actual record if available
-            if doctype and doc_name:
-                try:
+            try:
+                if doctype and doc_name:
+                    # Try to get the actual record
                     record = frappe.get_doc(doctype, doc_name).as_dict()
                     text_block = _record_to_text(doctype, record)
                     context_records.append(text_block)
-                except Exception as e:
-                    # If can't fetch record, use metadata
+                else:
+                    # Use metadata directly
                     text_block = "\n".join([f"{k}: {v}" for k, v in metadata.items()])
                     context_records.append(text_block)
-            else:
-                # Use metadata directly
+            except Exception as e:
+                # If error fetching record, use metadata
                 text_block = "\n".join([f"{k}: {v}" for k, v in metadata.items()])
                 context_records.append(text_block)
         
@@ -326,7 +317,7 @@ def answer_from_pinecone(
                 "success": False
             }
         
-        # Step 7: Synthesize answer with user context
+        # Step 6: Synthesize answer with user context
         final_answer = _synthesize_answer_with_context(
             query,
             context_records,
@@ -338,21 +329,27 @@ def answer_from_pinecone(
         elapsed = time.time() - start_time
         print(f"> RAG completed in {elapsed:.2f}s")
         
+        # Safe return
+        safe_context_used = context_records[:min(5, len(context_records))]
+        
         return {
             "question": query,
             "answer": final_answer,
-            "context_used": context_records[:5],  # Return top 5 for reference
+            "context_used": safe_context_used,
             "num_results": len(filtered_results),
+            "routed_doctypes": routed_doctypes,
             "success": True,
             "user_context": {
                 "batch": user_profile.get('batch') if user_profile else None,
                 "grade": user_profile.get('grade') if user_profile else None,
-                "filtered_by_grade": len(filtered_results) != len(raw_results)
+                "filtered_by_grade": len(filtered_results) != len(all_matches) if user_profile and user_profile.get('grade') else False
             }
         }
         
     except Exception as e:
         frappe.log_error(f"Pinecone search failed: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "question": query,
             "answer": f"An error occurred while searching: {str(e)}",

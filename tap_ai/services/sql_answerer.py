@@ -2,6 +2,7 @@
 """
 Text-to-SQL Engine - Enhanced with User Context
 Generates SQL queries with user-specific filtering (batch, grade)
+FIXED: Proper table name escaping for tables with spaces
 """
 
 import json
@@ -91,13 +92,23 @@ Generate a VALID MariaDB SQL query that answers the question.
 CRITICAL RULES:
 1. Use ONLY tables and columns that exist in the schema
 2. Table names MUST start with "tab" (e.g., "tabStudent", "tabVideoClass")
-3. Column names must be exact matches from the schema
-4. Use proper JOINs based on the relationships provided
-5. If user context is provided (batch, grade), ADD appropriate WHERE clauses
-6. Return ONLY valid SQL - no explanations, no markdown
-7. Use LIMIT to prevent huge result sets (max 100 rows)
-8. For Student queries with batch context, filter by batch automatically
-9. For content queries with grade context, filter by grade automatically
+3. **IMPORTANT**: If a table name contains spaces, wrap it in backticks in the entire query
+   - Example: `tabCourse Verticals` NOT tabCourse Verticals
+   - Example: `tabGrade Course Level Mapping` NOT tabGrade Course Level Mapping
+4. Column names must be exact matches from the schema
+5. Use proper JOINs based on the relationships provided
+6. If user context is provided (batch, grade), ADD appropriate WHERE clauses
+7. Return ONLY valid SQL - no explanations, no markdown
+8. Use LIMIT to prevent huge result sets (max 100 rows)
+9. For Student queries with batch context, filter by batch automatically
+10. For content queries with grade context, filter by grade automatically
+
+TABLE NAME EXAMPLES:
+✅ CORRECT: `tabCourse Verticals` (with backticks)
+❌ WRONG: tabCourse Verticals (without backticks - will cause syntax error)
+
+✅ CORRECT: `tabGrade Course Level Mapping` (with backticks)
+❌ WRONG: tabGrade Course Level Mapping (without backticks - will cause syntax error)
 
 FILTERING GUIDELINES:
 - If user has a batch and query involves Student data: WHERE batch = 'user_batch'
@@ -146,6 +157,7 @@ def _generate_sql_query(
         if user_context_parts:
             user_prompt_parts.append(f"\nUSER CONTEXT: {', '.join(user_context_parts)}")
             user_prompt_parts.append("IMPORTANT: Use the user context to filter results appropriately.")
+            user_prompt_parts.append("REMEMBER: Wrap table names with spaces in backticks (`)!")
     
     # Add content context
     if content_details:

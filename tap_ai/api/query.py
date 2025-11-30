@@ -6,7 +6,8 @@ Handles all student and teacher queries using dynamic field mapping
 
 import frappe
 from frappe import _
-from tap_ai.utils.dynamic_config import DynamicConfig, get_content_details, get_user_profile
+# ✅ FIXED IMPORT: get_user_profile is a classmethod, not a standalone function
+from tap_ai.utils.dynamic_config import DynamicConfig, get_content_details
 
 @frappe.whitelist(allow_guest=False)
 def query(**kwargs):
@@ -62,6 +63,7 @@ def query(**kwargs):
         # ============================================
         batch_id = context.get('batch_id')  # Optional specific batch
         
+        # ✅ CORRECT: Using DynamicConfig.get_user_profile() (classmethod)
         user_profile = DynamicConfig.get_user_profile(
             user_type,
             glific_id,
@@ -89,6 +91,7 @@ def query(**kwargs):
                     'error': f'Invalid content_type: {content_type} for {user_type}'
                 }
             
+            # ✅ CORRECT: get_content_details() is a standalone function
             # Fetch content details dynamically
             content_details = get_content_details(content_type, content_id)
             
@@ -106,8 +109,8 @@ def query(**kwargs):
             'user': {
                 'type': user_type,
                 'name': user_profile['name'],
-                'phone': user_profile['phone'],
-                'batch': user_profile['batch'],
+                'phone': user_profile.get('phone'),
+                'batch': user_profile.get('batch'),
                 'grade': user_profile.get('grade')
             },
             'content': content_details,
@@ -137,14 +140,16 @@ def query(**kwargs):
         # ============================================
         return {
             'success': True,
-            'answer': answer,
-            'user': {
+            **answer,  # Include all answer data (tool_used, fallback_used, etc.)
+            'user_profile': {
                 'name': user_profile['name'],
-                'type': user_type,
-                'batch': user_profile['batch']
+                'batch': user_profile.get('batch'),
+                'grade': user_profile.get('grade'),
+                'enrollments': user_profile.get('enrollments', []) if user_type == 'student' else None
             },
-            'content': {
+            'content_details': {
                 'type': content_type,
+                'id': content_id,
                 'title': content_details.get('title') if content_details else None
             } if content_details else None
         }
@@ -156,7 +161,8 @@ def query(**kwargs):
         )
         return {
             'success': False,
-            'error': 'An error occurred processing your query. Please try again.'
+            'error': 'An error occurred processing your query. Please try again.',
+            'details': str(e) if frappe.conf.developer_mode else None
         }
 
 
@@ -214,7 +220,7 @@ def get_content(**kwargs):
     Get content details
     
     Args:
-        content_type (str): 'video', 'quiz', 'assignment'
+        content_type (str): 'video', 'quiz', 'assignment', etc.
         content_id (str): Content ID
     
     Returns:
@@ -230,9 +236,9 @@ def get_content(**kwargs):
                 'error': 'content_type and content_id are required'
             }
         
-        content = get_content_details(content_type, content_id)
+        details = get_content_details(content_type, content_id)
         
-        if not content:
+        if not details:
             return {
                 'success': False,
                 'error': f'{content_type.title()} not found'
@@ -240,7 +246,7 @@ def get_content(**kwargs):
         
         return {
             'success': True,
-            'content': content
+            'content': details
         }
         
     except Exception as e:
@@ -248,78 +254,4 @@ def get_content(**kwargs):
         return {
             'success': False,
             'error': 'An error occurred fetching content details'
-        }
-
-
-@frappe.whitelist(allow_guest=False)
-def search_content(**kwargs):
-    """
-    Search for content
-    
-    Args:
-        content_type (str): 'video', 'quiz', 'assignment'
-        search_term (str): Search query
-        limit (int): Max results (default 10)
-    
-    Returns:
-        dict: Search results
-    """
-    try:
-        from tap_ai.utils.dynamic_config import search_content as search_fn
-        
-        content_type = kwargs.get('content_type')
-        search_term = kwargs.get('search_term')
-        limit = int(kwargs.get('limit', 10))
-        
-        if not content_type or not search_term:
-            return {
-                'success': False,
-                'error': 'content_type and search_term are required'
-            }
-        
-        results = search_fn(content_type, search_term, limit)
-        
-        return {
-            'success': True,
-            'results': results,
-            'count': len(results)
-        }
-        
-    except Exception as e:
-        frappe.log_error(f"Search Content Error: {str(e)}", "TAP AI API Error")
-        return {
-            'success': False,
-            'error': 'An error occurred searching content'
-        }
-
-
-@frappe.whitelist(allow_guest=False)
-def clear_config_cache():
-    """
-    Clear dynamic configuration cache
-    Useful after updating AI Integration Config
-    
-    Returns:
-        dict: Success message
-    """
-    try:
-        # Check permissions
-        if not frappe.has_permission("AI Integration Config", "write"):
-            return {
-                'success': False,
-                'error': 'Permission denied'
-            }
-        
-        DynamicConfig.clear_cache()
-        
-        return {
-            'success': True,
-            'message': 'Configuration cache cleared successfully'
-        }
-        
-    except Exception as e:
-        frappe.log_error(f"Clear Cache Error: {str(e)}", "TAP AI API Error")
-        return {
-            'success': False,
-            'error': 'An error occurred clearing cache'
         }
