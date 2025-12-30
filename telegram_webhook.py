@@ -1,145 +1,205 @@
 # tap_ai/telegram_webhook.py
-# Flask bridge between Telegram Bot and Frappe API
+# Telegram Channel Adapter for Frappe AI Backend
 
 import os
+import time
 import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from openai import OpenAI
 
-# --- Load environment variables ---
+# -------------------------------------------------------------------
+# Environment
+# -------------------------------------------------------------------
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 FRAPPE_API_URL = os.getenv("FRAPPE_API_URL")
+FRAPPE_API_RESULT_URL = os.getenv("FRAPPE_API_RESULT_URL")
 FRAPPE_API_KEY = os.getenv("FRAPPE_API_KEY")
 FRAPPE_API_SECRET = os.getenv("FRAPPE_API_SECRET")
-HTTP_PROXY = os.getenv("HTTP_PROXY")
-HTTPS_PROXY = os.getenv("HTTPS_PROXY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# --- Validate critical variables ---
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("FATAL: TELEGRAM_BOT_TOKEN is missing in .env")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-if not FRAPPE_API_URL:
-    raise ValueError("FATAL: FRAPPE_API_URL is missing in .env")
-
-print(f"Loaded Telegram Bot Token: {TELEGRAM_BOT_TOKEN[:10]}... (hidden for security)")
-
-# Flask app
 app = Flask(__name__)
 
-# Proxy dictionary for requests
-PROXIES = {}
-if HTTP_PROXY:
-    PROXIES['http'] = HTTP_PROXY
-if HTTPS_PROXY:
-    PROXIES['https'] = HTTPS_PROXY
+TELEGRAM_API_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Telegram send message URL
-TELEGRAM_SEND_MESSAGE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+HEADERS = {
+    "Authorization": f"token {FRAPPE_API_KEY}:{FRAPPE_API_SECRET}",
+    "Content-Type": "application/json"
+}
+
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+
+def telegram_get_file(file_id: str) -> str:
+    """Get downloadable Telegram file URL."""
+    r = requests.get(f"{TELEGRAM_API_BASE}/getFile", params={"file_id": file_id})
+    r.raise_for_status()
+    file_path = r.json()["result"]["file_path"]
+    return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
 
 
-@app.route('/webhook', methods=['POST'])
+def whisper_transcribe(file_url: str) -> tuple[str, str]:
+    """Download audio and transcribe using Whisper."""
+    audio = requests.get(file_url).content
+
+    with open("/tmp/input.ogg", "wb") as f:
+        f.write(audio)
+
+    with open("/tmp/input.ogg", "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="gpt-4o-transcribe",
+            file=audio_file
+        )
+
+    text = transcript.text
+    language = getattr(transcript, "language", "unknown")
+
+    return text, language
+
+
+def call_query_api(text: str, user_id: str) -> str:
+    params = {
+        "q": text,
+        "user_id": user_id
+    }
+
+    r = requests.post(
+        FRAPPE_API_URL,
+        params=params,
+        headers=HEADERS,
+        timeout=30
+    )
+    r.raise_for_status()
+
+    return r.json()["message"]["request_id"]
+
+
+def poll_result(request_id: str, timeout_sec: int = 60) -> dict:
+    start = time.time()
+
+    while time.time() - start < timeout_sec:
+        r = requests.get(
+            FRAPPE_API_RESULT_URL,
+            params={"request_id": request_id},
+            headers=HEADERS,
+            timeout=15
+        )
+        r.raise_for_status()
+
+        data = r.json()["message"]
+
+        if data["status"] in ("success", "failed"):
+            return data
+
+        time.sleep(2)
+
+    return {
+        "status": "failed",
+        "answer": "Request timed out."
+    }
+
+
+
+def tts_generate(text: str) -> str:
+    """Generate MP3 audio from text using OpenAI TTS."""
+    output_path = "/tmp/output.mp3"
+
+    with client.audio.speech.with_streaming_response.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=text
+    ) as response:
+        response.stream_to_file(output_path)
+
+    return output_path
+
+
+def send_text(chat_id: int, text: str):
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(f"{TELEGRAM_API_BASE}/sendMessage", json=payload, timeout=20)
+
+
+def send_voice(chat_id: int, audio_path: str):
+    with open(audio_path, "rb") as audio:
+        files = {"voice": audio}
+        data = {"chat_id": chat_id}
+        requests.post(
+            f"{TELEGRAM_API_BASE}/sendVoice",
+            data=data,
+            files=files,
+            timeout=30
+        )
+
+# -------------------------------------------------------------------
+# Webhook
+# -------------------------------------------------------------------
+
+@app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    """
-    Handles incoming Telegram messages.
-    """
     update = request.get_json()
+    message = update.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
 
-    if "message" in update and "text" in update["message"]:
-        chat_id = update["message"]["chat"]["id"]
-        user_query = update["message"]["text"]
+    if not chat_id:
+        return jsonify(success=True)
 
-        print(f"Received message from chat_id {chat_id}: '{user_query}'")
+    user_id = f"telegram:{chat_id}"
+    is_voice_input = False
 
-        if user_query == "/start":
-            send_telegram_message(chat_id,
-                "Hi, I'm your educational Assistant! Ask me anything related to your course, projects, or assignments.")
+    try:
+        # ---------------------------
+        # TEXT MESSAGE
+        # ---------------------------
+        if "text" in message:
+            user_text = message["text"]
+
+        # ---------------------------
+        # VOICE MESSAGE
+        # ---------------------------
+        elif "voice" in message:
+            is_voice_input = True
+            file_id = message["voice"]["file_id"]
+            file_url = telegram_get_file(file_id)
+            user_text, language = whisper_transcribe(file_url)
+
+        else:
+            send_text(chat_id, "Unsupported message type.")
             return jsonify(success=True)
 
-        user_id = f"telegram:{chat_id}"
+        # ---------------------------
+        # Call Frappe
+        # ---------------------------
+        request_id = call_query_api(user_text, user_id)
+        result = poll_result(request_id)
 
-        try:
-            headers = {
-                'Authorization': f'token {FRAPPE_API_KEY}:{FRAPPE_API_SECRET}',
-                'Content-Type': 'application/json'
-            }
-            payload = {
-                'q': user_query,
-                'user_id': user_id
-            }
+        if result["status"] == "success":
+            answer_text = result["answer"]
 
-            response = requests.post(FRAPPE_API_URL, json=payload, headers=headers, timeout=60, proxies=PROXIES or None)
-            response.raise_for_status()
-            api_result = response.json()
-
-            if 'message' in api_result and 'answer' in api_result['message']:
-                answer_text = api_result['message']['answer']
+            # Voice input → voice output
+            if is_voice_input:
+                try:
+                    audio_path = tts_generate(answer_text)
+                    send_voice(chat_id, audio_path)
+                except Exception as tts_err:
+                    print("TTS failed:", tts_err)
+                    send_text(chat_id, answer_text)
             else:
-                answer_text = str(api_result)
+                send_text(chat_id, answer_text)
 
-        except requests.exceptions.RequestException as e:
-            print(f"Error calling Frappe API: {e}")
-            answer_text = "Sorry, I'm having trouble connecting to my brain right now. Please try again later."
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            answer_text = "An unexpected error occurred. Please check the logs."
+        else:
+            send_text(chat_id, "Sorry, something went wrong while processing your request.")
 
-        send_telegram_message(chat_id, answer_text)
+    except Exception as e:
+        print("Webhook error:", e)
+        send_text(chat_id, "Internal error. Please try again later.")
 
     return jsonify(success=True)
 
-import re
-def clean_markdown(text: str) -> str:
-    """
-    Cleans text for Telegram Markdown while preserving proper formatting:
-    - Keeps valid bold, italic, and links intact.
-    - Escapes stray markdown characters only.
-    - Prevents Telegram '400 Bad Request' errors.
-    """
-    # Escape only characters not part of a Markdown link or formatting
-    # Avoid escaping: **bold**, _italic_, [text](url)
-    
-    # First, handle backslashes that are unnecessary
-    text = text.replace("\\", "")
 
-    # Escape stray special chars not inside proper markdown syntax
-    # For example: a single * or _ that isn't wrapped properly
-    text = re.sub(r'(?<!\*)\*(?!\*)', r'\*', text)  # leave **bold** untouched
-    text = re.sub(r'(?<!_)_(?!_)', r'\_', text)      # leave _italic_ untouched
-
-    return text
-
-
-def send_telegram_message(chat_id, text):
-    """
-    Sends a text message to a given chat_id via the Telegram Bot API.
-    Handles markdown errors and message length limits.
-    """
-    max_len = 4000  # Telegram safe limit
-    chunks = [text[i:i+max_len] for i in range(0, len(text), max_len)]
-
-    for chunk in chunks:
-        payload = {
-            'chat_id': chat_id,
-            'text': clean_markdown(chunk),
-            'parse_mode': 'Markdown'
-        }
-        try:
-            response = requests.post(TELEGRAM_SEND_MESSAGE_URL, json=payload, timeout=30, proxies=PROXIES or None)
-            if response.status_code == 400:
-                print("Markdown error detected, retrying with plain text")
-                payload.pop('parse_mode')
-                payload['text'] = chunk
-                retry_response = requests.post(TELEGRAM_SEND_MESSAGE_URL, json=payload, timeout=30, proxies=PROXIES or None)
-                retry_response.raise_for_status()
-            else:
-                response.raise_for_status()
-            print(f"Successfully sent response to chat_id {chat_id}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error sending message to Telegram: {e}")
-
-
-if __name__ == '__main__':
-    # Run without debug auto-reload to prevent botNone issues
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
