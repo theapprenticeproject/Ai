@@ -1,7 +1,7 @@
 # tap_ai/services/router.py
 """
-TAP AI Router - Enhanced with Dynamic Configuration Support
-Routes queries to Text-to-SQL or Vector RAG with full user context
+TAP AI Router - Enhanced with Optional User Context
+Intelligently routes queries to the best tool (SQL or RAG) with optional user context
 """
 
 import json
@@ -10,280 +10,286 @@ from typing import Dict, Any, List, Optional
 import frappe
 from langchain_openai import ChatOpenAI
 
-# --- Tool Imports ---
 from tap_ai.infra.config import get_config
-from tap_ai.services.sql_answerer import answer_from_sql
-from tap_ai.services.rag_answerer import answer_from_pinecone
 
 
-# --- LLM-based Tool Chooser ---
-
-ROUTER_PROMPT = """You are a query routing expert. Your job is to determine the best tool to answer a user's question based on its intent.
-
-You have the following tools available:
-1. `text_to_sql`: Best for factual, specific questions that can be answered by querying a structured database. Use this for questions like "list all...", "count...", "how many...", or questions that ask for specific data points with filters (e.g., "list videos with basic difficulty").
-2. `vector_search`: Best for conceptual, open-ended, or summarization questions that require understanding unstructured text. Use this for questions like "summarize...", "explain...", "what is...", or "tell me about...".
-
-Based on the user's question, decide which single tool is most appropriate.
-
-Return ONLY a JSON object with this structure:
-{
-  "tool": "text_to_sql" or "vector_search",
-  "reason": "A short explanation for your choice (<= 20 words)."
-}
-"""
+# --- LLM Initialization ---
 
 def _llm() -> ChatOpenAI:
-    """Initializes the Language Model client."""
+    """Initialize LLM for routing decisions."""
     api_key = get_config("openai_api_key")
     model = get_config("primary_llm_model") or "gpt-4o-mini"
-    return ChatOpenAI(model_name=model, openai_api_key=api_key, temperature=0.0)
+    return ChatOpenAI(
+        model_name=model,
+        openai_api_key=api_key,
+        temperature=0.0,
+        max_tokens=200
+    )
 
 
-def choose_tool(query: str, user_context: Optional[str] = None) -> str:
+# --- Routing Decision ---
+
+ROUTER_PROMPT = """You are a query routing assistant for an educational platform.
+
+Given a user's query, decide which tool to use:
+- text_to_sql: For factual, specific queries about data (list, show, find, how many, which, what are)
+- vector_search: For conceptual, explanatory queries (explain, why, how does, summarize, tell me about)
+
+Return ONLY a JSON object:
+{
+  "tool": "text_to_sql" or "vector_search",
+  "reason": "brief explanation"
+}
+
+Example:
+Query: "list all videos about budgeting"
+Response: {"tool": "text_to_sql", "reason": "Listing specific content from database"}
+
+Query: "explain how budgeting works"
+Response: {"tool": "vector_search", "reason": "Conceptual explanation needed"}
+"""
+
+
+def _choose_tool(query: str, user_profile: Optional[Dict] = None) -> Dict[str, str]:
     """
-    Uses an LLM to decide which tool (SQL or Vector Search) is best for the query.
+    Uses LLM to choose the best tool for the query.
     
     Args:
-        query: The user's question
-        user_context: Optional context about the user (grade, batch, etc.)
+        query: User's natural language question
+        user_profile: Optional user profile (for context)
     
     Returns:
-        Tool name: 'text_to_sql' or 'vector_search'
+        Dict with 'tool' and 'reason'
     """
     llm = _llm()
     
-    user_prompt = f"USER QUESTION:\n{query}"
-    if user_context:
-        user_prompt = f"USER CONTEXT:\n{user_context}\n\n{user_prompt}"
+    # Build context string
+    context_parts = [f"QUERY: {query}"]
     
-    user_prompt += "\n\nWhich tool should be used to answer this?"
+    if user_profile:
+        if user_profile.get('type'):
+            context_parts.append(f"USER TYPE: {user_profile['type']}")
+        if user_profile.get('grade'):
+            context_parts.append(f"GRADE: {user_profile['grade']}")
+    else:
+        context_parts.append("USER: Anonymous")
+    
+    user_prompt = "\n".join(context_parts)
     
     try:
-        resp = llm.invoke([("system", ROUTER_PROMPT), ("user", user_prompt)])
-        content = getattr(resp, "content", "")
-        if content.startswith("```json"):
-            content = content[7:-3].strip()
-        data = json.loads(content)
-        tool_choice = data.get("tool")
-        print(f"> Router Reason: {data.get('reason')}")
-        if tool_choice in ["text_to_sql", "vector_search"]:
-            return tool_choice
+        resp = llm.invoke([
+            ("system", ROUTER_PROMPT),
+            ("user", user_prompt)
+        ])
+        
+        content = getattr(resp, "content", "").strip()
+        
+        # Clean up response
+        content = content.replace("```json", "").replace("```", "").strip()
+        
+        # Parse JSON
+        decision = json.loads(content)
+        tool = decision.get("tool", "vector_search")
+        reason = decision.get("reason", "Default routing")
+        
+        print(f"> Router Decision: {tool} - {reason}")
+        
+        return {
+            "tool": tool,
+            "reason": reason
+        }
+        
     except Exception as e:
-        frappe.log_error(f"Tool router failed: {e}")
-    
-    print("> Router failed, defaulting to vector_search.")
-    return "vector_search"
+        frappe.log_error(f"Router decision failed: {e}")
+        # Default to vector_search on error
+        return {
+            "tool": "vector_search",
+            "reason": "Fallback due to routing error"
+        }
 
 
-# --- Main Answer Function (ENHANCED with User Context) ---
+# --- Main Processing Function ---
 
 def process_query(
     query: str,
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
-    context: Optional[Dict[str, Any]] = None,
-    history: Optional[List[Dict[str, str]]] = None
-) -> dict:
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Main entry point for processing queries with full user context.
+    Main query processing function with optional user context.
+    Routes to appropriate tool and returns answer.
     
     Args:
-        query: The user's question
-        user_profile: User profile from DynamicConfig.get_user_profile()
-            Contains: name, phone, batch, grade, enrollments, current_enrollment
-        content_details: Content details from get_content_details()
-            Contains: id, title, duration, difficulty, etc.
-        context: Additional context dictionary
-        history: Conversation history
+        query: Natural language question
+        user_profile: Optional user profile (can be None)
+        content_details: Optional content details
+        chat_history: Optional conversation history
+        context: Optional additional context
     
     Returns:
-        Dictionary with answer, metadata, and tool used
+        Dict with answer and metadata
     """
-    current_query = query
-    chat_history = history or []
-    
-    # Build enriched user context for better routing and responses
-    user_context_str = None
+    print(f"\n{'='*60}")
+    print(f"PROCESSING QUERY: {query}")
     if user_profile:
-        context_parts = [f"User: {user_profile.get('name', 'Unknown')}"]
-        
-        if user_profile.get('grade'):
-            context_parts.append(f"Grade: {user_profile['grade']}")
-        
-        if user_profile.get('batch'):
-            context_parts.append(f"Batch: {user_profile['batch']}")
-        
-        # Add enrollment info if available
-        if user_profile.get('current_enrollment'):
-            enrollment = user_profile['current_enrollment']
-            if enrollment.get('course'):
-                context_parts.append(f"Course: {enrollment['course']}")
-            if enrollment.get('school'):
-                context_parts.append(f"School: {enrollment['school']}")
-        
-        user_context_str = " | ".join(context_parts)
-        print(f"> User Context: {user_context_str}")
+        print(f"User: {user_profile.get('name', 'Unknown')} ({user_profile.get('type', 'unknown')})")
+    else:
+        print("User: Anonymous")
+    print(f"{'='*60}\n")
     
-    # Add content context if available
-    if content_details:
-        content_context = f"Content: {content_details.get('title', 'Unknown')}"
-        if content_details.get('type'):
-            content_context += f" (Type: {content_details['type']})"
-        print(f"> Content Context: {content_context}")
-        if user_context_str:
-            user_context_str += f"\n{content_context}"
-        else:
-            user_context_str = content_context
+    # Import tools
+    from tap_ai.services.sql_answerer import answer_from_sql
+    from tap_ai.services.rag_answerer import answer_from_pinecone
     
-    # Choose tool with enhanced context
-    primary_tool = choose_tool(current_query, user_context_str)
-    print(f"> Selected Primary Tool: {primary_tool}")
-
-    result = {}
-    fallback_used = False
-
-    if primary_tool == "text_to_sql":
-        result = answer_from_sql(
-            current_query,
-            user_profile=user_profile,
-            content_details=content_details,
-            chat_history=chat_history
-        )
-        
-        if _is_failure(result):
-            print("> Text-to-SQL failed. Falling back to Vector Search...")
-            fallback_used = True
-            interim_message = "Searching, please wait a few more seconds..."
-            result = answer_from_pinecone(
-                current_query,
+    # Step 1: Choose tool
+    routing_decision = _choose_tool(query, user_profile)
+    chosen_tool = routing_decision["tool"]
+    
+    # Step 2: Try primary tool
+    try:
+        if chosen_tool == "text_to_sql":
+            print("> Using Text-to-SQL engine...")
+            result = answer_from_sql(
+                query=query,
                 user_profile=user_profile,
                 content_details=content_details,
-                chat_history=chat_history
+                chat_history=chat_history or []
             )
-            result['interim_message'] = interim_message
-    else:
-        primary_tool = "vector_search"
-        result = answer_from_pinecone(
-            current_query,
-            user_profile=user_profile,
-            content_details=content_details,
-            chat_history=chat_history
-        )
-
-    return _with_meta(result, current_query, primary=primary_tool, fallback=fallback_used)
-
-
-# --- Backward Compatibility Wrapper ---
-
-def answer(q: str, history: Optional[List[Dict[str, str]]] = None) -> dict:
-    """
-    Backward compatibility wrapper for old function signature.
+            
+            # Check if SQL succeeded
+            if result.get("results_count", 0) > 0:
+                return {
+                    "answer": result["answer"],
+                    "tool_used": "text_to_sql",
+                    "sql_query": result.get("sql_query"),
+                    "results_count": result["results_count"],
+                    "execution_time": result.get("execution_time"),
+                    "routing_reason": routing_decision["reason"]
+                }
+            else:
+                # SQL returned no results, try RAG as fallback
+                print("> SQL returned no results, falling back to RAG...")
+                result = answer_from_pinecone(
+                    query=query,
+                    user_profile=user_profile,
+                    content_details=content_details,
+                    chat_history=chat_history or []
+                )
+                
+                return {
+                    "answer": result["answer"],
+                    "tool_used": "vector_search",
+                    "fallback_from": "text_to_sql",
+                    "routed_doctypes": result.get("routed_doctypes", []),
+                    "results_count": result.get("results_count", 0),
+                    "search_time": result.get("search_time"),
+                    "routing_reason": routing_decision["reason"]
+                }
+        
+        else:  # vector_search
+            print("> Using Vector RAG engine...")
+            result = answer_from_pinecone(
+                query=query,
+                user_profile=user_profile,
+                content_details=content_details,
+                chat_history=chat_history or []
+            )
+            
+            return {
+                "answer": result["answer"],
+                "tool_used": "vector_search",
+                "routed_doctypes": result.get("routed_doctypes", []),
+                "results_count": result.get("results_count", 0),
+                "search_time": result.get("search_time"),
+                "routing_reason": routing_decision["reason"]
+            }
     
-    This maintains compatibility with existing code that calls answer()
-    without user context. New code should use process_query() instead.
-    
-    Args:
-        q: Query string
-        history: Optional conversation history
-    
-    Returns:
-        Query result dictionary
+    except Exception as e:
+        error_msg = str(e)
+        frappe.log_error(f"Query processing failed: {error_msg}\nQuery: {query}")
+        
+        # Try fallback tool on error
+        print(f"> Error with {chosen_tool}, trying fallback...")
+        
+        try:
+            if chosen_tool == "text_to_sql":
+                # Fallback to RAG
+                result = answer_from_pinecone(
+                    query=query,
+                    user_profile=user_profile,
+                    content_details=content_details,
+                    chat_history=chat_history or []
+                )
+                
+                return {
+                    "answer": result["answer"],
+                    "tool_used": "vector_search",
+                    "fallback_from": "text_to_sql",
+                    "fallback_reason": "Error in primary tool",
+                    "routed_doctypes": result.get("routed_doctypes", []),
+                    "results_count": result.get("results_count", 0)
+                }
+            else:
+                # Fallback to SQL
+                result = answer_from_sql(
+                    query=query,
+                    user_profile=user_profile,
+                    content_details=content_details,
+                    chat_history=chat_history or []
+                )
+                
+                return {
+                    "answer": result["answer"],
+                    "tool_used": "text_to_sql",
+                    "fallback_from": "vector_search",
+                    "fallback_reason": "Error in primary tool",
+                    "sql_query": result.get("sql_query"),
+                    "results_count": result.get("results_count", 0)
+                }
+        
+        except Exception as fallback_error:
+            frappe.log_error(f"Fallback also failed: {str(fallback_error)}")
+            
+            # Return generic error message
+            return {
+                "answer": "I'm sorry, I encountered an error processing your query. Please try rephrasing your question or try again later.",
+                "tool_used": "error",
+                "error": error_msg,
+                "fallback_error": str(fallback_error)
+            }
+
+
+# --- CLI Function for Testing ---
+
+def cli(q: str, user_id: str = "test_user"):
     """
-    print("> WARNING: Using legacy answer() function without user context.")
-    print("> Consider updating to process_query() for personalized responses.")
-    return process_query(q, user_profile=None, content_details=None, history=history)
-
-
-# --- Helper functions ---
-
-def _is_failure(res: dict) -> bool:
-    """Robust failure detector."""
-    if not res:
-        return True
-    if res.get("success") is False:
-        return True
-    answer = res.get("answer", "")
-    if not answer or len(answer.strip()) < 10:
-        return True
-    # Check for explicit error indicators
-    error_phrases = [
-        "could not generate",
-        "failed to execute",
-        "no results",
-        "error occurred",
-        "unable to",
-    ]
-    answer_lower = answer.lower()
-    return any(phrase in answer_lower for phrase in error_phrases)
-
-
-def _with_meta(result: dict, query: str, primary: str, fallback: bool) -> dict:
-    """Adds metadata to the result."""
-    result["query"] = query
-    result["tool_used"] = primary
-    result["fallback_used"] = fallback
-    return result
-
-
-# --- CLI for Testing ---
-
-def cli(q: str = None, user_id: str = "test_user", **kwargs):
-    """
-    Command-line interface for testing with automatic history management.
+    Command-line interface for testing the router.
     
     Usage:
-        # Simple query
-        bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos', 'user_id':'test_user_1'}"
-        
-        # With user context
-        bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos', 'user_id':'student123', 'user_type':'student', 'glific_id':'12345'}"
-    
-    Args:
-        q: Query string
-        user_id: Unique user ID for conversation tracking
-        **kwargs: Additional parameters like user_type, glific_id, etc.
+        bench execute tap_ai.services.router.cli --kwargs "{'q': 'your question', 'user_id': 'test'}"
     """
-    if not q:
-        print("ERROR: No query provided. Use: --kwargs \"{'q':'your question', 'user_id':'user123'}\"")
-        return None
-
-    import hashlib
-    cache_key = f"chat_history:{hashlib.md5(user_id.encode()).hexdigest()}"
-
-    # Load conversation history
-    history = frappe.cache().get_value(cache_key) or []
-    print(f"\n> User: {user_id}")
-    print(f"> Loaded {len(history)} previous turn(s) from cache.")
+    print(f"\n{'='*80}")
+    print(f"TAP AI ROUTER - CLI TEST")
+    print(f"{'='*80}\n")
+    print(f"Query: {q}")
+    print(f"User ID: {user_id}")
+    print()
     
-    # Get user profile if user_type and glific_id provided
-    user_profile = None
-    if kwargs.get('user_type') and kwargs.get('glific_id'):
-        from tap_ai.utils.dynamic_config import DynamicConfig
-        user_profile = DynamicConfig.get_user_profile(
-            kwargs['user_type'],
-            kwargs['glific_id'],
-            kwargs.get('batch_id')
-        )
-        if user_profile:
-            print(f"> User Profile: {user_profile.get('name')} (Grade {user_profile.get('grade')}, Batch {user_profile.get('batch')})")
-
-    # Process query with context
-    result = process_query(q, user_profile=user_profile, history=history)
-
-    # Update history
-    history.append({"role": "user", "content": q})
-    history.append({"role": "assistant", "content": result.get("answer", "")})
-    frappe.cache().set_value(cache_key, history, expires_in_sec=3600)
-
-    # Display results
-    print("\n" + "="*70)
-    print(f"QUESTION: {result.get('query')}")
-    print(f"TOOL USED: {result.get('tool_used')}")
-    if result.get('fallback_used'):
-        print("(Fallback was used)")
-    print("-"*70)
-    print(f"ANSWER:\n{result.get('answer')}")
-    print("="*70 + "\n")
-
+    # For CLI testing, use anonymous context
+    result = process_query(
+        query=q,
+        user_profile=None,  # Anonymous for CLI
+        content_details=None,
+        chat_history=[],
+        context={'user_id': user_id}
+    )
+    
+    print(f"\n{'='*80}")
+    print(f"RESULT:")
+    print(f"{'='*80}")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print()
+    
     return result
