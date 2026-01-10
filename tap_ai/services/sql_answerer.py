@@ -1,8 +1,11 @@
 # tap_ai/services/sql_answerer.py
-# Implements the Text-to-SQL approach with a rich, dynamic schema and chat history.
+"""
+Text-to-SQL Engine - Enhanced with Optional User Context
+Generates SQL queries with optional grade/batch filtering for personalized results
+"""
 
 import json
-import logging
+import time
 from typing import Dict, Any, List, Optional
 
 import frappe
@@ -11,206 +14,390 @@ from langchain_openai import ChatOpenAI
 from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema
 
-logger = logging.getLogger(__name__)
 
-# --- LLM and Schema Helpers ---
+# --- LLM Initialization ---
 
-def _llm(model: str = "gpt-4o-mini") -> Optional[ChatOpenAI]:
-    """Initializes the Language Model client."""
+def _llm(model: str = "gpt-4o-mini", temperature: float = 0.0) -> ChatOpenAI:
+    """Initializes the Language Model client for SQL generation."""
     api_key = get_config("openai_api_key")
-    if not api_key:
-        logger.error("OpenAI API key missing.")
-        return None
-    return ChatOpenAI(model_name=model, openai_api_key=api_key, temperature=0.0, max_tokens=1024)
+    return ChatOpenAI(
+        model_name=model,
+        openai_api_key=api_key,
+        temperature=temperature,
+        max_tokens=800
+    )
 
-def _schema_summary_for_sql() -> str:
+
+# --- Schema Building ---
+
+def _build_enriched_schema_prompt(user_profile: Optional[Dict] = None) -> str:
     """
-    Creates a rich, text-based summary of the DB schema, including filterable
-    fields, their specific options, and explicit join information to guide the LLM.
+    Builds an enriched schema prompt with optional user context hints.
+    
+    Args:
+        user_profile: Optional user profile (can be None)
+    
+    Returns:
+        String containing schema description for LLM
     """
     schema = load_schema()
-    summary_parts = []
+    tables = schema.get("tables", {})
+    allowed_joins = schema.get("allowed_joins", [])
+    guardrails = schema.get("guardrails", [])
     
-    FILTERABLE_TYPES = {"Select", "Link"}
-
-    summary_parts.append("TABLES (with filterable fields and options):")
-    for tname, tinfo in schema.get("tables", {}).items():
-        doctype = tinfo.get("doctype") or tname.replace("tab", "", 1)
+    prompt_parts = ["DATABASE SCHEMA:\n"]
+    
+    # Add tables
+    for table_name, table_info in tables.items():
+        doctype = table_info.get("doctype")
+        columns = table_info.get("columns", [])
+        description = table_info.get("description", "")
         
-        try:
-            meta = frappe.get_meta(doctype)
-            field_details = []
-            for field in meta.fields:
-                # Include filterable fields like Select and Link
-                if field.fieldtype in FILTERABLE_TYPES:
-                    if field.fieldtype == "Select" and field.options:
-                        options = [opt.strip() for opt in field.options.split('\n') if opt.strip()]
-                        field_details.append(f"{field.fieldname} (Select, Options: {options})")
-                    elif field.fieldtype == "Link" and field.options:
-                        field_details.append(f"{field.fieldname} (Link to {field.options})")
-                # Also include key data fields for context
-                elif field.fieldtype in {"Data", "Small Text", "Text", "Currency", "Int", "Float"}:
-                    field_details.append(f"{field.fieldname} ({field.fieldtype})")
-            
-            if field_details:
-                summary_parts.append(f"- {tname}:")
-                for detail in field_details:
-                    summary_parts.append(f"  - {detail}")
+        prompt_parts.append(f"\nTable: {table_name} (DocType: {doctype})")
+        prompt_parts.append(f"Description: {description}")
+        prompt_parts.append(f"Columns: {', '.join(columns[:20])}")  # Limit for brevity
+        
+        # Add display field if available
+        if table_info.get("display_field"):
+            prompt_parts.append(f"Display Field: {table_info['display_field']}")
+    
+    # Add allowed joins
+    if allowed_joins:
+        prompt_parts.append("\n\nALLOWED JOINS:")
+        for join in allowed_joins[:20]:  # Limit for brevity
+            prompt_parts.append(
+                f"- {join['left_table']}.{join['left_key']} → "
+                f"{join['right_table']}.{join['right_key']}"
+            )
+    
+    # Add guardrails
+    if guardrails:
+        prompt_parts.append("\n\nGUARDRAILS:")
+        for rule in guardrails:
+            prompt_parts.append(f"- {rule}")
+    
+    # Add user context hints if available
+    if user_profile:
+        prompt_parts.append("\n\nUSER CONTEXT:")
+        
+        if user_profile.get('type'):
+            prompt_parts.append(f"- User Type: {user_profile['type']}")
+        
+        if user_profile.get('grade'):
+            prompt_parts.append(f"- Grade: {user_profile['grade']}")
+            prompt_parts.append(f"  IMPORTANT: Filter results by grade = '{user_profile['grade']}' when querying student content")
+        
+        if user_profile.get('batch'):
+            prompt_parts.append(f"- Batch: {user_profile['batch']}")
+            prompt_parts.append(f"  Consider filtering by batch when relevant")
+        
+        if user_profile.get('current_enrollment'):
+            enrollment = user_profile['current_enrollment']
+            if enrollment.get('course'):
+                prompt_parts.append(f"- Current Course: {enrollment['course']}")
+                prompt_parts.append(f"  Prioritize content from this course")
+    else:
+        prompt_parts.append("\n\nUSER CONTEXT:")
+        prompt_parts.append("- Anonymous query (no user-specific filtering)")
+        prompt_parts.append("- Return general content without grade/batch filters")
+    
+    return "\n".join(prompt_parts)
 
-        except frappe.DoesNotExistError:
-            # Fallback for schemas without detailed meta
-            cols = ", ".join(tinfo.get("columns", []))
-            summary_parts.append(f"- {tname}: Columns are [{cols}]")
 
-    # ---Add the explicit join information ---
-    summary_parts.append("\nJOINS (how tables connect):")
-    for join in schema.get("allowed_joins", []):
-        why = join.get('why', f"{join['left_table']}.{join['left_key']} -> {join['right_table']}.{join['right_key']}")
-        summary_parts.append(f"- {why}")
+# --- SQL Generation ---
 
-    return "\n".join(summary_parts)
+SQL_GENERATION_PROMPT = """You are an expert SQL query generator for an educational platform database.
 
+Your task is to convert natural language questions into valid MariaDB SQL queries based on the provided schema.
 
-# --- Core Text-to-SQL Logic ---
+RULES:
+1. Return ONLY valid SQL - no explanations, no markdown, no backticks
+2. Use ONLY tables and joins from the schema
+3. Always use table aliases for clarity
+4. Primary key is always 'name'
+5. Always include LIMIT clause (default: 20)
+6. Use proper WHERE conditions for filtering
+7. Apply user context filters (grade, batch) when provided and relevant
+8. For SELECT *, limit to essential columns when possible
+9. Handle NULL values appropriately
+10. Use LIKE '%term%' for text search
 
-SQL_GEN_PROMPT = """You are an expert SQL query generator. Your task is to convert a natural language question into a precise and safe SQL query for a MariaDB database.
+RESPONSE FORMAT:
+Return ONLY the SQL query, nothing else.
 
-Given:
-- A user's question.
-- A schema summary describing tables, their filterable fields, the exact options for those fields, and how they join.
-
-Return ONLY a JSON object with this structure:
-{
-  "sql": "SELECT ... FROM ... WHERE ... LIMIT 20;",
-  "reason": "A short explanation of the generated query (<= 30 words)."
-}
-
-Rules:
-- The SQL query MUST be valid for MariaDB.
-- The query MUST be a `SELECT` statement. Do NOT generate `UPDATE`, `DELETE`, or `INSERT` queries.
-- ALWAYS include a `LIMIT` clause (e.g., `LIMIT 20`).
-- Use ONLY the tables, columns, and joins provided in the schema.
-- When filtering, the value in the `WHERE` clause MUST exactly match one of the `Options` provided in the schema (e.g., `WHERE difficulty_tier = 'Basic'`). Do not guess or approximate values.
-- If the question cannot be answered, return `{"sql": null, "reason": "The question cannot be answered with the available data."}`
+Example good queries:
+- SELECT v.name, v.video_name, v.difficulty_tier FROM `tabVideoClass` v WHERE v.difficulty_tier = 'Basic' LIMIT 10
+- SELECT s.name, s.name1, s.grade FROM `tabStudent` s WHERE s.grade = '8' LIMIT 20
+- SELECT a.name, a.assignment_name, a.subject FROM `tabAssignment` a WHERE a.difficulty_tier = 'Intermediate' LIMIT 15
 """
 
-def _generate_sql_query(query: str) -> Dict[str, Any]:
-    """Uses an LLM to generate a SQL query from a natural language question."""
-    llm = _llm("gpt-4o")
-    if not llm: return {"sql": None, "reason": "LLM not available."}
 
-    schema_summary = _schema_summary_for_sql()
-    user_prompt = (f"QUESTION:\n{query}\n\nDATABASE SCHEMA:\n{schema_summary}\n\nGenerate the SQL query.")
-    try:
-        resp = llm.invoke([("system", SQL_GEN_PROMPT), ("user", user_prompt)])
-        content = getattr(resp, "content", "")
-        if content.startswith("```json"):
-            content = content[7:-3].strip()
-        
-        data = json.loads(content)
-        sql = data.get("sql")
-        
-        # Basic validation
-        if sql and "SELECT" in sql.upper() and "LIMIT" in sql.upper():
-            print(f"LLM Reason for SQL: {data.get('reason')}")
-            return data
-        else:
-            print(f"LLM Reason (Query Failed Validation): {data.get('reason')}")
-            return {"sql": None, "reason": data.get('reason')}
-    except Exception as e:
-        logger.error(f"SQL generation LLM failed: {e}")
-        return {"sql": None, "reason": f"LLM error: {e}"}
-
-def _execute_sql(sql_query: str) -> List[Dict[str, Any]]:
-    """Executes a given SQL query and returns the results."""
-    try:
-        return frappe.db.sql(sql_query, as_dict=True)
-    except Exception as e:
-        frappe.log_error(f"SQL execution failed for query: {sql_query}", f"Error: {e}")
-        # Return an empty list on failure to prevent crashes
-        return []
-
-def _synthesize_answer(
+def _generate_sql_query(
     query: str,
-    sql_query: str,
-    results: List[Dict[str, Any]],
-    chat_history: List[Dict[str, str]]
+    schema_prompt: str,
+    user_profile: Optional[Dict] = None
 ) -> str:
-    """Asks the LLM to turn the SQL results into a natural language answer, using history for context."""
+    """
+    Uses LLM to generate SQL from natural language query.
+    
+    Args:
+        query: User's natural language question
+        schema_prompt: Enriched schema description
+        user_profile: Optional user profile for context
+    
+    Returns:
+        Generated SQL query string
+    """
     llm = _llm()
-
-    system_prompt = (
-        "You are a helpful assistant. The user asked a question, a SQL query was run, and here are the results. "
-        "Based on the conversation history and the data, formulate a friendly, natural language answer to the user's final question."
-    )
     
-    history_str = "\n".join([f"{turn['role'].title()}: {turn['content']}" for turn in chat_history])
+    # Build user prompt with context hints
+    user_prompt_parts = [
+        f"QUESTION: {query}",
+        "",
+        schema_prompt
+    ]
     
-    user_prompt_with_context = (
-        f"CONVERSATION HISTORY:\n---\n{history_str}\n---\n\n"
-        f"FINAL QUESTION: {query}\n\n"
-        f"SQL QUERY THAT WAS RUN: {sql_query}\n\n"
-        f"DATA RESULTS:\n{json.dumps(results, indent=2, default=str)}\n\n"
-        "Please provide a final, user-friendly answer."
-    )
-
+    # Add specific instructions for user context
+    if user_profile:
+        if user_profile.get('grade'):
+            user_prompt_parts.append(
+                f"\nIMPORTANT: User is in Grade {user_profile['grade']}. "
+                f"Filter by grade = '{user_profile['grade']}' when querying student content like videos, quizzes, assignments."
+            )
+        
+        if user_profile.get('batch'):
+            user_prompt_parts.append(
+                f"User's batch is {user_profile['batch']}. Consider filtering by batch when relevant."
+            )
+    else:
+        user_prompt_parts.append(
+            "\nNote: This is an anonymous query. Return general content without user-specific filters."
+        )
+    
+    user_prompt = "\n".join(user_prompt_parts)
+    
     try:
-        resp = llm.invoke([("system", system_prompt), ("user", user_prompt_with_context)])
-        return (getattr(resp, "content", None) or "Could not synthesize an answer.").strip()
+        resp = llm.invoke([
+            ("system", SQL_GENERATION_PROMPT),
+            ("user", user_prompt)
+        ])
+        sql = getattr(resp, "content", "").strip()
+        
+        # Clean up the SQL
+        sql = sql.replace("```sql", "").replace("```", "").strip()
+        
+        # Add LIMIT if missing
+        if "LIMIT" not in sql.upper():
+            sql += " LIMIT 20"
+        
+        print(f"> Generated SQL: {sql[:200]}...")
+        return sql
+        
     except Exception as e:
-        frappe.log_error(f"SQL answer synthesis failed: {e}")
-        return "There was an error while formatting the answer."
+        frappe.log_error(f"SQL generation failed: {e}")
+        raise Exception(f"Failed to generate SQL query: {str(e)}")
+
+
+# --- SQL Execution ---
+
+def _execute_sql(sql: str) -> List[Dict[str, Any]]:
+    """
+    Executes SQL query safely and returns results.
+    
+    Args:
+        sql: SQL query string
+    
+    Returns:
+        List of result dictionaries
+    """
+    try:
+        # Execute as dict for easier processing
+        results = frappe.db.sql(sql, as_dict=True)
+        print(f"> SQL returned {len(results)} rows")
+        return results
+        
+    except Exception as e:
+        error_msg = str(e)
+        frappe.log_error(f"SQL execution failed: {error_msg}\nSQL: {sql}")
+        
+        # Return user-friendly error
+        if "doesn't exist" in error_msg:
+            raise Exception("The query referenced tables that don't exist in the database.")
+        elif "syntax" in error_msg.lower():
+            raise Exception("The generated SQL query had a syntax error.")
+        else:
+            raise Exception(f"Database error: {error_msg}")
+
+
+# --- Answer Synthesis ---
+
+def _synthesize_answer_from_results(
+    query: str,
+    sql: str,
+    results: List[Dict[str, Any]],
+    user_profile: Optional[Dict] = None
+) -> str:
+    """
+    Uses LLM to synthesize a natural language answer from SQL results.
+    
+    Args:
+        query: Original user question
+        sql: SQL query that was executed
+        results: Query results
+        user_profile: Optional user profile for personalization
+    
+    Returns:
+        Natural language answer
+    """
+    llm = _llm(temperature=0.2)
+    
+    # Build system prompt with optional personalization
+    if user_profile and user_profile.get('name'):
+        system_prompt = f"""You are a helpful educational assistant.
+
+The user is {user_profile.get('name', 'a learner')}.
+"""
+        if user_profile.get('type'):
+            system_prompt += f"User type: {user_profile['type'].title()}. "
+        
+        if user_profile.get('grade'):
+            system_prompt += f"They are in Grade {user_profile['grade']}. "
+        
+        system_prompt += """
+Convert the SQL query results into a clear, friendly answer.
+Address the user by name when appropriate.
+"""
+    else:
+        system_prompt = """You are a helpful educational assistant.
+
+Convert the SQL query results into a clear, friendly answer.
+"""
+    
+    system_prompt += """
+RULES:
+1. Answer the user's question directly
+2. Present data in a clear, organized format
+3. Be concise but complete
+4. Use bullet points or numbering for lists
+5. Include relevant details from the results
+6. If no results, say so politely
+7. Be encouraging and helpful
+"""
+    
+    # Format results for LLM
+    if not results:
+        results_text = "No results found."
+    else:
+        # Limit to first 20 results for LLM context
+        limited_results = results[:20]
+        results_text = json.dumps(limited_results, indent=2, default=str)
+    
+    user_prompt = f"""QUESTION: {query}
+
+SQL QUERY: {sql}
+
+RESULTS ({len(results)} total):
+{results_text}
+
+Provide a helpful answer based on these results."""
+    
+    try:
+        resp = llm.invoke([
+            ("system", system_prompt),
+            ("user", user_prompt)
+        ])
+        answer = getattr(resp, "content", "I couldn't generate an answer.").strip()
+        
+        # Add personalized greeting if user profile available
+        if user_profile and user_profile.get('name') and not answer.startswith("Hi"):
+            answer = f"Hi {user_profile['name']}! {answer}"
+        
+        return answer
+        
+    except Exception as e:
+        frappe.log_error(f"Answer synthesis failed: {e}")
+        return "I found some results but couldn't format them properly. Please try rephrasing your question."
+
 
 # --- Main Function ---
+
 def answer_from_sql(
     query: str,
+    user_profile: Optional[Dict[str, Any]] = None,
+    content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None
 ) -> Dict[str, Any]:
     """
-    Main Text-to-SQL entry point, now aware of conversation history.
-    """
-    chat_history = chat_history or []
-    print("> Starting Text-to-SQL process...")
+    Main Text-to-SQL entry point with optional user context.
     
-    generation_result = _generate_sql_query(query)
-    sql_query = generation_result.get("sql")
-
-    if not sql_query:
-        # Explicitly signal failure if no valid SQL was generated.
-        return {"question": query, "answer": "I could not generate a valid SQL query.", "sql_query": None, "success": False}
-    print(f"\n> Generated SQL Query:\n{sql_query}")
+    Args:
+        query: Natural language question
+        user_profile: Optional user profile from DynamicConfig.get_user_profile()
+            Contains: name, batch, grade, enrollments, current_enrollment
+            Can be None for anonymous queries
+        content_details: Optional content details (not typically used for SQL)
+        chat_history: Optional conversation history (not typically used for SQL)
+    
+    Returns:
+        Dictionary with answer, SQL query, results, and metadata
+    """
+    start_time = time.time()
+    
+    print("> Starting Text-to-SQL process...")
+    if user_profile:
+        user_name = user_profile.get('name', 'Unknown')
+        user_grade = user_profile.get('grade', 'N/A')
+        user_batch = user_profile.get('batch', 'N/A')
+        print(f"> User Context: {user_name} | Grade {user_grade} | Batch {user_batch}")
+    else:
+        print("> No user context - generating general SQL query")
     
     try:
+        # Step 1: Build enriched schema prompt
+        print("> Building schema prompt...")
+        schema_prompt = _build_enriched_schema_prompt(user_profile)
+        
+        # Step 2: Generate SQL query
+        print("> Generating SQL query...")
+        sql_query = _generate_sql_query(query, schema_prompt, user_profile)
+        
+        # Step 3: Execute SQL
+        print("> Executing SQL query...")
         results = _execute_sql(sql_query)
+        
+        # Step 4: Synthesize natural language answer
+        print("> Synthesizing answer...")
+        answer = _synthesize_answer_from_results(
+            query=query,
+            sql=sql_query,
+            results=results,
+            user_profile=user_profile
+        )
+        
+        elapsed = round(time.time() - start_time, 2)
+        print(f"> Text-to-SQL process completed in {elapsed}s")
+        
+        return {
+            "question": query,
+            "answer": answer,
+            "sql_query": sql_query,
+            "results_count": len(results),
+            "results": results[:10],  # Return first 10 for API response
+            "execution_time": elapsed,
+            "user_context": "personalized" if user_profile else "general"
+        }
+        
     except Exception as e:
-        # On a database error, return a specific failure flag for the router.
-        return {"question": query, "answer": f"The query failed to execute. Error: {e}", "sql_query": sql_query, "success": False}
-
-    if not results:
-        # This is a "soft failure" - the query ran but found nothing.
-        return {"question": query, "answer": "The query ran successfully but returned no results.", "sql_query": sql_query, "success": True}
-    final_answer = _synthesize_answer(query, sql_query, results, chat_history)
-
-    return {
-        "question": query,
-        "answer": final_answer,
-        "sql_query": sql_query,
-        "raw_results": results,
-        "success": True
-    }
-
-# --- Bench CLI Helper ---
-def cli(query: str):
-    """
-    Bench command to test the Text-to-SQL pipeline.
-    Example:
-    bench execute tap_ai.services.sql_answerer.cli --kwargs "{'query': 'list the names of all course videos and their links having basic difficulty'}"
-    """
-    result = answer_from_sql(query)
-    
-    print("\n--- FINAL ANSWER ---")
-    final_json = json.dumps(result, indent=2, default=str)
-    print(final_json)
-    
-    return result
-
+        error_msg = str(e)
+        frappe.log_error(f"Text-to-SQL failed: {error_msg}\nQuery: {query}")
+        
+        elapsed = round(time.time() - start_time, 2)
+        
+        return {
+            "question": query,
+            "answer": f"I encountered an error while processing your query: {error_msg}",
+            "sql_query": None,
+            "results_count": 0,
+            "error": error_msg,
+            "execution_time": elapsed
+        }
