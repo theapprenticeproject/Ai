@@ -3,26 +3,34 @@
 import frappe
 import json
 import uuid
-from tap_ai.services.router import answer as route_query
+
+from tap_ai.utils.dynamic_config import DynamicConfig, get_content_details
+from tap_ai.services.router import process_query
 from tap_ai.services.ratelimit import check_rate_limit
+
+
+# -------------------------------------------------------------------
+# QUERY API (ASYNC ENTRY POINT)
+# -------------------------------------------------------------------
 
 @frappe.whitelist(methods=["POST"], allow_guest=True)
 def query():
     """
-    Query API: Accepts 'q' and optional 'user_id'.
-    Returns: request_id immediately. Actual answer is computed in the background.
+    Async Query API.
+    Accepts query + optional user context.
+    Returns request_id immediately.
     """
-    user_id = frappe.session.user
     data = frappe.local.form_dict or {}
     q = data.get("q")
-    
-    if data.get("user_id"):
-        user_id = data.get("user_id")
 
     if not q:
-        frappe.throw("Missing required parameter in POST body: q (the user's question)")
+        frappe.throw("Missing required parameter: q")
 
-    # Rate limiting 
+    # ------------------------------
+    # Rate limiting
+    # ------------------------------
+    user_id = data.get("user_id") or frappe.session.user
+
     auth = frappe.get_request_header("Authorization") or ""
     api_key = None
     if auth.lower().startswith("token "):
@@ -33,91 +41,174 @@ def query():
 
     ok, remaining, reset = check_rate_limit(
         api_key=api_key,
-        scope=f"query_api_{user_id}", 
-        limit=60, 
+        scope=f"query_api_{user_id}",
+        limit=60,
         window_sec=60
     )
+
     if not ok:
         frappe.throw(
             f"Rate limit exceeded. Try again in {reset} seconds.",
             frappe.TooManyRequestsError,
         )
 
-    # Generate request ID 
-    request_id = f"REQ_{uuid.uuid4().hex[:8]}"
+    # ------------------------------
+    # Generate request_id
+    # ------------------------------
+    request_id = f"REQ_{uuid.uuid4().hex[:10]}"
 
-    # Save request in cache as 'pending'
-    frappe.cache().set(request_id, json.dumps({
-        "status": "pending",
-        "answer": None,
-        "query": q,
-        "user_id": user_id,
-        "history": []
-    }))  
+    # Save pending state
+    frappe.cache().set(
+        request_id,
+        json.dumps({
+            "status": "pending",
+            "query": q,
+            "answer": None,
+            "user_id": user_id
+        })
+       
+    )
 
-    # Trigger background processing
-    frappe.enqueue("tap_ai.api.query._process_query",
-                   queue="long",
-                   timeout=300,
-                   request_id=request_id,
-                   query=q,
-                   user_id=user_id)
+    # ------------------------------
+    # Enqueue background job
+    # ------------------------------
+    frappe.enqueue(
+        "tap_ai.api.query._process_query",
+        queue="long",
+        timeout=300,
+        request_id=request_id,
+        payload=data
+    )
 
-    return {"request_id": request_id}
+    return {
+        "success": True,
+        "request_id": request_id,
+        "status": "pending"
+    }
 
 
-def _process_query(request_id: str, query: str, user_id: str):
-    """Background job to compute the answer and update cache."""
-    import frappe, json
-    from tap_ai.services.router import answer as route_query
+# -------------------------------------------------------------------
+# BACKGROUND WORKER
+# -------------------------------------------------------------------
 
-    chat_history_key = f"chat_history_{user_id}"
-    chat_history = []
-
+def _process_query(request_id: str, payload: dict):
+    """
+    Background worker that:
+    - builds user context
+    - calls router.process_query
+    - stores result in cache
+    """
     try:
-        # --- Fetch previous chat history safely ---
-        cached_history = frappe.cache().get(chat_history_key)
-        if cached_history:
-            if isinstance(cached_history, bytes):
-                cached_history = cached_history.decode("utf-8")
+        # ------------------------------
+        # Extract inputs
+        # ------------------------------
+        query_text = payload.get("q")
+        user_type = payload.get("user_type")
+        glific_id = payload.get("glific_id")
+        phone = payload.get("phone")
+        name = payload.get("name")
+        batch_id = payload.get("batch_id")
+        context = payload.get("context", {})
+
+        # ------------------------------
+        # Build user profile (graceful)
+        # ------------------------------
+        user_profile = None
+        user_context_level = "none"
+
+        if user_type and glific_id:
             try:
-                chat_history = json.loads(cached_history)
-                if not isinstance(chat_history, list):
-                    chat_history = []
+                user_profile = DynamicConfig.get_user_profile(
+                    user_type, glific_id, batch_id
+                )
+                user_context_level = "full" if user_profile else "partial"
             except Exception:
-                chat_history = []
+                user_context_level = "partial"
 
-        # Call router/LLM logic 
-        out = route_query(query, history=chat_history)
+        if not user_profile and user_type:
+            user_profile = {
+                "type": user_type,
+                "name": name or "there",
+                "phone": phone,
+                "glific_id": glific_id,
+                "grade": None,
+                "batch": None,
+            }
 
-        # Update history (last 10 messages) 
-        chat_history.append({"role": "user", "content": query})
-        chat_history.append({"role": "assistant", "content": out.get("answer", "")})
-        frappe.cache().set(chat_history_key, json.dumps(chat_history[-10:]))
+        # ------------------------------
+        # Content details (optional)
+        # ------------------------------
+        content_details = None
+        if context.get("content_type") and context.get("content_id"):
+            try:
+                content_details = get_content_details(
+                    context["content_type"],
+                    context["content_id"]
+                )
+            except Exception:
+                content_details = None
 
-        # Store routed_doctypes in cache with request
-        metadata = out.get("metadata", {})
-        routed_doctypes = metadata.get("routed_doctypes", [])
+        # ------------------------------
+        # Call router (CORE)
+        # ------------------------------
+        result = process_query(
+            query=query_text,
+            user_profile=user_profile,
+            content_details=content_details,
+            chat_history=[]
+        )
 
-        # Update request in cache as 'success'
-        frappe.cache().set(request_id, json.dumps({
-            "status": "success",
-            "answer": out.get("answer"),
-            "query": query,
-            "user_id": user_id,
-            "history": chat_history[-10:],  # last 10
-            "routed_doctypes": routed_doctypes
-        }))
-
-        frappe.log_error(f"_process_query success for {request_id}", "Query Debug")
+        # ------------------------------
+        # Save success result
+        # ------------------------------
+        frappe.cache().set(
+            request_id,
+            json.dumps({
+                "status": "success",
+                "answer": result.get("answer"),
+                "tool_used": result.get("tool_used"),
+                "metadata": result,
+                "user_context_level": user_context_level
+            })
+        )
 
     except Exception as e:
-        frappe.cache().set(request_id, json.dumps({
-            "status": "failed",
-            "answer": None,
-            "query": query,
-            "user_id": user_id,
-            "error": str(e),
-            "history": chat_history[-10:]
-        }))
-        frappe.log_error(f"_process_query failed for {request_id}: {e}", "Query Debug")
+        frappe.cache().set(
+            request_id,
+            json.dumps({
+                "status": "failed",
+                "error": str(e)
+            })
+        )
+
+        frappe.log_error(
+            f"_process_query failed: {e}",
+            "TAP AI Query Worker"
+        )
+
+
+# -------------------------------------------------------------------
+# RESULT API
+# -------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def result(request_id: str):
+    """
+    Result API.
+    Client polls this using request_id.
+    """
+    if not request_id:
+        return {"success": False, "error": "request_id required"}
+
+    cached = frappe.cache().get(request_id)
+    if not cached:
+        return {"success": False, "error": "Invalid or expired request_id"}
+
+    if isinstance(cached, bytes):
+        cached = cached.decode("utf-8")
+
+    data = json.loads(cached)
+    return {
+        "success": True,
+        **data
+    }
