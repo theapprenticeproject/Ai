@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import decimal
+import json
 from datetime import date, datetime, time as dtime
 from typing import Dict, List, Optional, Any
 
@@ -14,7 +15,10 @@ from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema
 from tap_ai.services.doctype_selector import pick_doctypes
 
-# --------- helpers ---------
+
+# -------------------------------------------------------------------
+# Pinecone / Embedding helpers
+# -------------------------------------------------------------------
 
 def _pc() -> Pinecone:
     api_key = get_config("pinecone_api_key")
@@ -34,55 +38,42 @@ def _emb() -> OpenAIEmbeddings:
         raise RuntimeError("Missing openai_api_key in site_config.json")
     return OpenAIEmbeddings(model=model, api_key=api_key)
 
+
+# -------------------------------------------------------------------
+# Utility helpers
+# -------------------------------------------------------------------
+
 def _to_plain(v: Any) -> Any:
-    """Make values JSON-safe for text conversion."""
-    if v is None: return None
-    if isinstance(v, (str, int, float, bool)): return v
-    if isinstance(v, decimal.Decimal): return float(v)
-    if isinstance(v, (datetime, date, dtime)): return v.isoformat()
+    if v is None:
+        return None
+    if isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    if isinstance(v, (datetime, date, dtime)):
+        return v.isoformat()
     return str(v)
 
 def _record_to_text(doctype: str, row: Dict[str, Any]) -> str:
-    """
-    Flatten a record to a text block, giving extra weight to the doctype's most important field.
-    """
     parts = []
     meta = frappe.get_meta(doctype)
-    
-    title_field = None
-    title_value = None
 
-    official_title_field = meta.title_field
-    if official_title_field and official_title_field in row and row[official_title_field]:
-        title_field = official_title_field
-        title_value = row[title_field]
-    else:
-        fallback_fields = [
-            'title', 'name1', 'video_name', 'assignment_name', 'project_name', 
-            'quiz_name', 'objective_name', 'unit_name', 'comp_name', 'note_name'
-        ]
-        for field in fallback_fields:
-            if field in row and row[field]:
-                title_field = field
-                title_value = row[field]
-                break
-
-    if title_field and title_value:
-        title_label = meta.get_field(title_field).label or title_field.replace("_", " ").title()
-        parts.append(f"{title_label}: {title_value}")
+    title_field = meta.title_field
+    if title_field and row.get(title_field):
+        label = meta.get_field(title_field).label or title_field
+        parts.append(f"{label}: {row[title_field]}")
 
     parts.append(f"DocType: {doctype}")
-    parts.append(f"ID: {row.get('name','')}")
-    
+    parts.append(f"ID: {row.get('name')}")
+
     for k, v in row.items():
-        if k in ('name', title_field) or v in (None, ""):
+        if k in ("name", title_field) or v in (None, ""):
             continue
         parts.append(f"{k}: {_to_plain(v)}")
-        
+
     return "\n".join(parts)
 
-def get_db_columns_for_doctype(doctype: str) -> list[str]:
-    """Return only actual DB columns for the DocType's table, with a robust fallback."""
+def get_db_columns_for_doctype(doctype: str) -> List[str]:
     table = f"tab{doctype}"
     try:
         return frappe.db.get_table_columns(table) or []
@@ -90,7 +81,33 @@ def get_db_columns_for_doctype(doctype: str) -> list[str]:
         desc = frappe.db.sql(f"DESCRIBE `{table}`", as_dict=True)
         return [d["Field"] for d in desc]
 
-# --------- upsert pipeline ---------
+
+# -------------------------------------------------------------------
+# ExcludedDoctypes handling
+# -------------------------------------------------------------------
+
+def _get_excluded_doctypes() -> set[str]:
+    excluded = set()
+    try:
+        recs = frappe.get_all("ExcludedDoctypes", fields=["name"], limit=1)
+        if not recs:
+            return excluded
+        doc = frappe.get_doc("ExcludedDoctypes", recs[0].name)
+        for row in doc.excluded_doctype:
+            if row.doctype_name:
+                excluded.add(row.doctype_name)
+    except Exception:
+        pass
+    return excluded
+
+def _filter_excluded(doctypes: List[str]) -> List[str]:
+    excluded = _get_excluded_doctypes()
+    return [dt for dt in doctypes if dt not in excluded]
+
+
+# -------------------------------------------------------------------
+# Upsert pipeline
+# -------------------------------------------------------------------
 
 def upsert_doctype(
     doctype: str,
@@ -98,181 +115,191 @@ def upsert_doctype(
     group_records: int = 20,
     embed_batch: int = 64,
 ) -> Dict[str, Any]:
+
     idx = _index()
     emb = _emb()
-    total_records, total_vectors = 0, 0
+
+    total_records = 0
+    total_vectors = 0
+
     table = f"tab{doctype}"
-    
-    try:
-        select_cols = frappe.db.get_table_columns(table) or []
-    except Exception:
-        desc = frappe.db.sql(f"DESCRIBE `{table}`", as_dict=True)
-        select_cols = [d["Field"] for d in desc]
+    columns = get_db_columns_for_doctype(doctype)
 
-    if "name" in select_cols:
-        select_cols = ["name"] + [c for c in select_cols if c != "name"]
+    if "name" in columns:
+        columns = ["name"] + [c for c in columns if c != "name"]
 
-    where_parts = ["docstatus < 2"]
-    params: List[Any] = []
-    if since:
-        where_parts.append("modified >= %s")
-        params.append(since)
-    where_sql = " AND ".join(where_parts)
+    rows = frappe.get_all(
+        doctype,
+        fields=columns,
+        filters={"docstatus": ("<", 2)},
+    )
 
-    page_size = 1000
-    offset = 0
     buffer_texts, buffer_ids, buffer_meta = [], [], []
 
     def flush():
         nonlocal total_vectors
-        if not buffer_texts: return
-        
-        vectors_values = emb.embed_documents(buffer_texts)
-        vectors = [
-            {"id": buffer_ids[i], "values": vectors_values[i], "metadata": buffer_meta[i]}
+        if not buffer_texts:
+            return
+        vectors = emb.embed_documents(buffer_texts)
+        payload = [
+            {
+                "id": buffer_ids[i],
+                "values": vectors[i],
+                "metadata": buffer_meta[i],
+            }
             for i in range(len(buffer_texts))
         ]
-        idx.upsert(vectors=vectors, namespace=doctype)
-        total_vectors += len(vectors)
-        buffer_texts.clear(); buffer_ids.clear(); buffer_meta.clear()
+        idx.upsert(vectors=payload, namespace=doctype)
+        total_vectors += len(payload)
+        buffer_texts.clear()
+        buffer_ids.clear()
+        buffer_meta.clear()
 
     group: List[Dict[str, Any]] = []
-    while True:
-        rows = frappe.get_all(doctype, filters={"docstatus": ("<", 2)}, fields=select_cols, limit_page_length=page_size, limit_start=offset)
-        if not rows: break
 
-        for row in rows:
-            total_records += 1
-            group.append(row)
-            if len(group) >= group_records:
-                record_ids = [str(g.get("name")) for g in group]
-                combined_text = "\n\n--- END OF RECORD ---\n\n".join([_record_to_text(doctype, g) for g in group])
-                
-                # --- THIS IS THE KEY CHANGE ---
-                # Create a metadata payload with filterable fields
-                meta = {
-                    "doctype": doctype,
-                    "record_ids": record_ids,
-                    "text": combined_text,
-                    "count": len(group)
-                }
-                # Add specific, known filterable fields from the first record
-                first_rec = group[0]
-                filterable_fields = ["status", "difficulty_tier", "language", "assignment_type", "grade_level", "subject"]
-                for field in filterable_fields:
-                    if field in first_rec and first_rec[field]:
-                        meta[field] = first_rec[field]
+    for row in rows:
+        total_records += 1
+        group.append(row)
 
-                buffer_texts.append(combined_text)
-                buffer_ids.append(f"{doctype}:{record_ids[0]}:+{len(record_ids)}")
-                buffer_meta.append(meta)
-                group = []
+        if len(group) >= group_records:
+            record_ids = [str(r["name"]) for r in group]
+            text = "\n\n---\n\n".join(_record_to_text(doctype, r) for r in group)
 
-                if len(buffer_texts) >= embed_batch: flush()
-        offset += page_size
-    
-    # Process final partial group
+            meta = {
+                "doctype": doctype,
+                "record_ids": record_ids,
+                "count": len(group),
+                "text": text,
+            }
+
+            buffer_texts.append(text)
+            buffer_ids.append(f"{doctype}:{record_ids[0]}")
+            buffer_meta.append(meta)
+            group = []
+
+            if len(buffer_texts) >= embed_batch:
+                flush()
+
     if group:
-        record_ids = [str(g.get("name")) for g in group]
-        combined_text = "\n\n--- END OF RECORD ---\n\n".join([_record_to_text(doctype, g) for g in group])
-        meta = {"doctype": doctype, "record_ids": record_ids, "text": combined_text, "count": len(group)}
-        first_rec = group[0]
-        filterable_fields = ["status", "difficulty_tier", "language", "assignment_type", "grade_level", "subject"]
-        for field in filterable_fields:
-            if field in first_rec and first_rec[field]:
-                meta[field] = first_rec[field]
-        buffer_texts.append(combined_text)
-        buffer_ids.append(f"{doctype}:{record_ids[0]}:+{len(record_ids)}")
-        buffer_meta.append(meta)
-    
+        record_ids = [str(r["name"]) for r in group]
+        text = "\n\n---\n\n".join(_record_to_text(doctype, r) for r in group)
+        buffer_texts.append(text)
+        buffer_ids.append(f"{doctype}:{record_ids[0]}")
+        buffer_meta.append({
+            "doctype": doctype,
+            "record_ids": record_ids,
+            "count": len(group),
+            "text": text,
+        })
+
     flush()
-    return {"doctype": doctype, "records_seen": total_records, "vectors_upserted": total_vectors}
+
+    return {
+        "doctype": doctype,
+        "records_seen": total_records,
+        "vectors_upserted": total_vectors,
+    }
+
 
 def upsert_all(
     doctypes: Optional[List[str]] = None,
     since: Optional[str] = None,
-    group_records: int = 20,
-    embed_batch: int = 64,
 ) -> Dict[str, Any]:
-    """Upsert multiple doctypes with user-friendly console logging."""
+
     if doctypes is None:
         schema = load_schema()
-        doctypes = [t[3:] if t.startswith("tab") else t for t in schema.get("allowlist", [])]
+        doctypes = [t.replace("tab", "") for t in schema.get("allowlist", [])]
 
-    print(f"Starting upsert for {len(doctypes)} DocTypes...")
-
-    out: Dict[str, Any] = {}
-    for i, dt in enumerate(doctypes):
-        print(f"\n[{i+1}/{len(doctypes)}] Processing DocType: {dt}...")
+    out = {}
+    for dt in doctypes:
         try:
-            result = upsert_doctype(dt, since=since, group_records=group_records, embed_batch=embed_batch)
-            out[dt] = result
-            if "error" in result:
-                print(f"❗️ Error processing {dt}: {result['error']}")
-            else:
-                print(f"✅ Finished {dt}: Saw {result.get('records_seen', 0)} records, upserted {result.get('vectors_upserted', 0)} vectors.")
-
+            out[dt] = upsert_doctype(dt, since=since)
         except Exception as e:
-            error_msg = str(e)
-            out[dt] = {"error": error_msg}
-            frappe.log_error(f"Failed to upsert doctype {dt}", error_msg)
-            print(f"❗️ Critical error processing {dt}: {error_msg}")
+            out[dt] = {"error": str(e)}
+            frappe.log_error(f"Upsert failed for {dt}", str(e))
 
-    print("\n--- Upsert process completed. ---")
     return out
 
-# --------- search ---------
+
+# -------------------------------------------------------------------
+# SEARCH (THIS IS THE IMPORTANT PART)
+# -------------------------------------------------------------------
 
 def search_auto_namespaces(
     q: str,
     k: int = 8,
     route_top_n: int = 4,
-    filters: Optional[Dict[str, Any]] = None
+    filters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Routes query to relevant DocTypes, then searches Pinecone with optional metadata filters.
-    """
+
     idx = _index()
     emb = _emb()
-    doctypes = pick_doctypes(q, top_n=route_top_n) or ["VideoClass"] # Fallback to a default
-    
+
+    # 1. Route doctypes using LLM
+    doctypes = pick_doctypes(q, top_n=route_top_n) or []
+
+    # 2. Enforce exclusion list
+    doctypes = _filter_excluded(doctypes)
+
+    # 3. Fallback to schema allowlist if routing failed
+    if not doctypes:
+        schema = load_schema()
+        doctypes = [
+            t.replace("tab", "")
+            for t in schema.get("allowlist", [])[:route_top_n]
+        ]
+
     qvec = emb.embed_query(q)
-    all_matches: List[Dict] = []
-    
+    all_matches: List[Dict[str, Any]] = []
+
     for ns in doctypes:
         try:
             res = idx.query(
                 namespace=ns,
                 vector=qvec,
                 top_k=k,
-                filter=filters, 
-                include_values=False,
+                filter=filters,
                 include_metadata=True,
+                include_values=False,
             )
+
             for m in res.get("matches", []):
-                match_dict = {
+                all_matches.append({
                     "id": m.id,
                     "score": m.score,
                     "namespace": ns,
                     "metadata": m.metadata,
-                }
-                all_matches.append(match_dict)
+                })
+
         except Exception as e:
-            frappe.log_error(f"Pinecone query failed for ns={ns}: {e}")
+            frappe.log_error(
+                f"Pinecone query failed for namespace {ns}", str(e)
+            )
 
-    all_matches.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    all_matches.sort(key=lambda x: x.get("score", 0), reverse=True)
+
     return {
-        "q": q, "routed_doctypes": doctypes, "k": k, "matches": all_matches[:k],
+        "q": q,
+        "routed_doctypes": doctypes,
+        "k": k,
+        "matches": all_matches[:k],
     }
-# --------- bench CLIs ---------
 
-def cli_upsert_all(doctypes: Optional[List[str]] = None, since: Optional[str] = None, group_records: int = 20):
-    # use since parameter for incremental updates, e.g. "2025-10-01 12:34:56"
-    out = upsert_all(doctypes=doctypes, since=since, group_records=group_records)
-    print(frappe.as_json(out))
+
+# -------------------------------------------------------------------
+# Bench CLIs
+# -------------------------------------------------------------------
+
+def cli_upsert_all():
+    """
+    bench execute tap_ai.services.pinecone_store.cli_upsert_all
+    """
+    out = upsert_all()
+    print(frappe.as_json(out, indent=2))
     return out
 
 def cli_search_auto(q: str, k: int = 8, route_top_n: int = 4):
     out = search_auto_namespaces(q=q, k=k, route_top_n=route_top_n)
     print(frappe.as_json(out, indent=2))
     return out
+

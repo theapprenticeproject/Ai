@@ -5,18 +5,20 @@ import logging
 from typing import List, Dict, Any, Optional
 from functools import lru_cache
 
-logger = logging.getLogger(__name__)
-
 import frappe
 from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema  
 
-SYSTEM_PROMPT = """You are a routing assistant. 
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """You are a routing assistant.
+
 Given:
-- A natural language question about TAP ai data
+- A natural language question about TAP AI data
 - A JSON schema that lists DocTypes, their fields, and link relationships
+- OPTIONAL user context (user type, grade)
 
 Return ONLY a JSON object with:
 {
@@ -27,19 +29,21 @@ Return ONLY a JSON object with:
 Rules:
 - Choose the minimum set of DocTypes that can answer the query.
 - Prefer DocTypes explicitly mentioning fields used in the question.
-- If multiple similar doctypes exist (e.g., Student vs Backend Students), prioritize the one that most closely matches the entire phrase used in the query (e.g., "backend students" → Backend Students).
-- If no explicit match exists, pick the semantically closest.
-- Use link relationships to include supporting DocTypes only if needed to answer the query.
-- Keep 'doctypes' length <= TOP_N (the tool will tell you).
+- If user context is provided, prefer DocTypes relevant to that user type.
+- Use link relationships only if required to answer the query.
+- Keep 'doctypes' length <= TOP_N.
 - No prose outside JSON. No backticks.
 """
 
+
 def _llm() -> Optional[ChatOpenAI]:
     api_key = get_config("openai_api_key")
-    model = "gpt-3.5-turbo" or get_config("primary_llm_model")
+    model = get_config("primary_llm_model") or "gpt-4o-mini"
+
     if not api_key:
         logger.error("OpenAI API key missing.")
         return None
+
     return ChatOpenAI(
         model_name=model,
         openai_api_key=api_key,
@@ -47,46 +51,74 @@ def _llm() -> Optional[ChatOpenAI]:
         max_tokens=400,
     )
 
+
 def _schema_summary(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact the schema to essentials to keep prompt small."""
-    # Expect schema like: {"tables": { "<table>": {"description": "...", "columns": [...]}}, "links": [...]}
+    """
+    Compact schema summary to keep prompt small.
+    """
     tables = schema.get("tables", {})
     links = schema.get("allowed_joins", []) or schema.get("links", [])
-    # Take only names + field lists (clip to first ~25 to keep prompt small)
+
     compact_tables = {}
     for tname, tinfo in tables.items():
-        cols = tinfo.get("columns") or tinfo.get("fields") or []
+        cols = tinfo.get("columns") or []
         compact_tables[tname] = {
             "doctype": tinfo.get("doctype") or tname.replace("tab", "", 1),
             "fields": cols[:25],
-            "description": tinfo.get("description", "")[:160]
+            "description": (tinfo.get("description") or "")[:160],
         }
-    return {"tables": compact_tables, "links": links}
+
+    return {
+        "tables": compact_tables,
+        "links": links[:25],
+    }
+
 
 @lru_cache(maxsize=256)
-def pick_doctypes(query: str, top_n: int = 5) -> List[str]:
+def pick_doctypes(
+    query: str,
+    top_n: int = 5,
+    user_profile_json: Optional[str] = None,
+) -> List[str]:
     """
-    Use LLM + tap_ai_schema.json to pick the best DocTypes for this query.
-    Falls back to a lightweight heuristic if the LLM output isn't valid JSON.
+    Pick the most relevant DocTypes for a query.
+
+    NOTE:
+    - user_profile_json is a JSON string for cache safety
+    - Pass None if no user context
     """
     query = (query or "").strip().lower()
     schema = load_schema()
     summary = _schema_summary(schema)
     llm = _llm()
 
-    # Build a small, cached prompt to avoid recomputing
-    # You can cache the summary string if you like:
+    if not llm:
+        return []
+
+    # Decode user profile (optional)
+    user_profile = None
+    if user_profile_json:
+        try:
+            user_profile = json.loads(user_profile_json)
+        except Exception:
+            user_profile = None
+
     schema_snippet = json.dumps(summary, ensure_ascii=False)
+
+    # --- Optional user context hints ---
+    user_context = ""
+    if user_profile:
+        if user_profile.get("type"):
+            user_context += f"USER TYPE: {user_profile['type']}\n"
+        if user_profile.get("grade"):
+            user_context += f"GRADE: {user_profile['grade']}\n"
 
     user_msg = (
         f"TOP_N={top_n}\n\n"
+        f"{user_context}\n"
         f"QUESTION:\n{query}\n\n"
-        f"SCHEMA SUMMARY (DocTypes with fields & links):\n{schema_snippet}"
+        f"SCHEMA SUMMARY:\n{schema_snippet}"
     )
-
-    if not llm:
-        logger.warning("LLM not available; using heuristic fallback.")
-        return _fallback_doctypes(query, summary, top_n)
 
     try:
         resp = llm.invoke(
@@ -98,62 +130,38 @@ def pick_doctypes(query: str, top_n: int = 5) -> List[str]:
         txt = resp.content.strip()
         data = json.loads(txt)
         doctypes = data.get("doctypes", [])
-        # Clean up "tabX" / bare names and dedupe
-        doctypes = _normalize_doctypes(doctypes, summary)
-        return doctypes[:top_n] if doctypes else _fallback_doctypes(query, summary, top_n)
+
+        return _normalize_doctypes(doctypes, summary)[:top_n]
+
     except Exception as e:
         logger.warning("DocType selection LLM failed: %s", e)
-        return _fallback_doctypes(query, summary, top_n)
+        return []
 
-def _normalize_doctypes(candidates: List[str], summary: Dict[str, Any]) -> List[str]:
-    """Map user/LLM-proposed names to canonical DocType names found in schema."""
-    schema_names = set()
-    map_lower: Dict[str, str] = {}
-    for k in summary["tables"].keys():
-        # schema uses either "tabX" or clean names in your loader; handle both
-        clean = k.replace("tab", "", 1) if k.startswith("tab") else k
-        schema_names.add(clean)
-        map_lower[clean.lower()] = clean
+
+def _normalize_doctypes(
+    candidates: List[str],
+    summary: Dict[str, Any]
+) -> List[str]:
+    """
+    Normalize LLM-proposed names to canonical DocType names in schema.
+    """
+    schema_names = {}
+    for table_name, info in summary["tables"].items():
+        clean = info["doctype"]
+        schema_names[clean.lower()] = clean
+
     normalized = []
     for name in candidates:
-        nl = name.lower().replace("tab", "", 1).strip()
-        if nl in map_lower:
-            normalized.append(map_lower[nl])
-    # dedupe preserve order
-    seen = set()
-    out = []
-    for n in normalized:
-        if n not in seen:
-            out.append(n)
-            seen.add(n)
-    return out
+        key = name.lower().replace("tab", "").strip()
+        if key in schema_names:
+            normalized.append(schema_names[key])
 
-def _fallback_doctypes(query: str, summary: Dict[str, Any], top_n: int) -> List[str]:
-    """
-    Simple heuristic:
-    - score tables by keyword overlap on field names + description
-    - prefer a few obviously relevant doctypes
-    """
-    ql = query.lower()
-    scored: List[tuple] = []
-    for tname, tinfo in summary["tables"].items():
-        clean = tname.replace("tab", "", 1)
-        score = 0
-        desc = (tinfo.get("description") or "").lower()
-        if "student" in ql and "student" in clean.lower():
-            score += 5
-        if "school" in ql and "school" in clean.lower():
-            score += 5
-        if "activity" in ql and "activity" in clean.lower():
-            score += 5
-        # field keyword overlap
-        for f in (tinfo.get("fields") or []):
-            fl = (str(f) or "").lower()
-            if fl and any(tok in ql for tok in fl.split("_")):
-                score += 1
-        if desc and any(w in desc for w in ql.split()):
-            score += 1
-        if score:
-            scored.append((score, clean))
-    scored.sort(reverse=True)
-    return [name for _, name in scored[:top_n]] or list(summary["tables"].keys())[:top_n]
+    # Deduplicate while preserving order
+    seen = set()
+    final = []
+    for d in normalized:
+        if d not in seen:
+            final.append(d)
+            seen.add(d)
+
+    return final
