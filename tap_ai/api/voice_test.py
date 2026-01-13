@@ -6,6 +6,7 @@ import uuid
 import os
 import time
 from openai import OpenAI
+from frappe.utils import get_url
 
 
 # ---------------------------------------------------------
@@ -19,9 +20,12 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
+
 def call_query_api(text: str, user_id: str) -> str:
+    base_url = get_url()
+
     r = requests.post(
-        "http://tap.localhost/api/method/tap_ai.api.query.query",
+        f"{base_url}/api/method/tap_ai.api.query.query",
         params={
             "q": text,
             "user_id": user_id
@@ -31,26 +35,22 @@ def call_query_api(text: str, user_id: str) -> str:
         },
         timeout=30
     )
-    r.raise_for_status()
-    return r.json()["message"]["request_id"]
 
 
 def poll_result_api(request_id: str, timeout_sec: int = 30) -> dict:
+    base_url = get_url()
     start = time.time()
+
     while time.time() - start < timeout_sec:
         r = requests.get(
-            "http://tap.localhost/api/method/tap_ai.api.result.result",
+            f"{base_url}/api/method/tap_ai.api.result.result",
             params={"request_id": request_id},
             headers={
                 "Content-Type": "application/json"
             },
-            timeout=60
+            timeout=30
         )
-        r.raise_for_status()
-        data = r.json()["message"]
-        if data.get("status") in ("success", "failed"):
-            return data
-        time.sleep(1.5)
+
 
     return {"status": "failed", "answer": "Request timed out"}
 
