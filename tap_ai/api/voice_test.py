@@ -16,8 +16,8 @@ def get_internal_base_url():
     host = frappe.conf.get("host_name")
 
     if not host:
-        # Fallback for local dev
-        return "http://127.0.0.1:8000"
+       
+        return "https://ai.evalix.xyz"
 
     if host.startswith("http"):
         return host
