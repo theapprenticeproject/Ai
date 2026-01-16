@@ -1,29 +1,21 @@
-# tap_ai/api/voice_test.py
-
 import frappe
 import requests
 import uuid
 import os
 import time
+from urllib.parse import urlparse
 from openai import OpenAI
 
 
 # ---------------------------------------------------------
-# CONFIG (IMPORTANT)
+# CONFIG
 # ---------------------------------------------------------
 
-def get_internal_base_url():
-    host = frappe.conf.get("host_name")
+BASE_URL = "https://ai.evalix.xyz"
 
-    if not host:
-       
-        return "https://ai.evalix.xyz"
-
-    if host.startswith("http"):
-        return host
-
-    return f"http://{host}"
-
+SUPPORTED_AUDIO_EXTENSIONS = {
+    "mp3", "wav", "m4a", "ogg", "webm", "flac", "mp4", "mpeg", "mpga"
+}
 
 
 # ---------------------------------------------------------
@@ -37,10 +29,53 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
+client = get_openai_client()
+
+
+def detect_intent_language(text: str) -> str:
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Determine the language the user intended to speak. "
+                    "Ignore the script. Reply ONLY with a lowercase ISO code "
+                    "such as en, hi, ta."
+                )
+            },
+            {"role": "user", "content": text}
+        ],
+        temperature=0
+    )
+    return completion.choices[0].message.content.strip().lower()
+
+
+def get_audio_extension(audio_url: str, content_type: str | None) -> str:
+    """
+    Detect audio extension from URL or Content-Type header
+    """
+    # 1️. Try URL extension
+    path = urlparse(audio_url).path
+    ext = os.path.splitext(path)[1].replace(".", "").lower()
+
+    if ext in SUPPORTED_AUDIO_EXTENSIONS:
+        return ext
+
+    # 2. Try Content-Type header
+    if content_type:
+        if "audio/" in content_type:
+            guessed = content_type.split("/")[-1].lower()
+            if guessed in SUPPORTED_AUDIO_EXTENSIONS:
+                return guessed
+
+    # Safe fallback
+    return "mp3"
+
+
 def call_query_api(text: str, user_id: str) -> str:
-    base_url = get_internal_base_url()
     r = requests.post(
-        f"{base_url}/api/method/tap_ai.api.query.query",
+        f"{BASE_URL}/api/method/tap_ai.api.query.query",
         params={
             "q": text,
             "user_id": user_id
@@ -55,9 +90,8 @@ def poll_result_api(request_id: str, timeout_sec: int = 60) -> dict:
     start = time.time()
 
     while time.time() - start < timeout_sec:
-        base_url = get_internal_base_url()
         r = requests.get(
-            f"{base_url}/api/method/tap_ai.api.result.result",
+            f"{BASE_URL}/api/method/tap_ai.api.result.result",
             params={"request_id": request_id},
             timeout=60
         )
@@ -70,23 +104,6 @@ def poll_result_api(request_id: str, timeout_sec: int = 60) -> dict:
         time.sleep(1.5)
 
     return {"status": "failed", "answer": "Request timed out"}
-
-
-def translate_back(answer: str, target_language: str) -> str:
-    if target_language == "en":
-        return answer
-
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": f"Translate the following text to {target_language}"},
-            {"role": "user", "content": answer}
-        ]
-    )
-    return completion.choices[0].message.content
-
-
-client = get_openai_client()
 
 
 # ---------------------------------------------------------
@@ -103,46 +120,66 @@ def process():
     if not audio_url:
         frappe.throw("audio_url is required")
 
-    # 1. Download audio
-    audio_bytes = requests.get(audio_url, timeout=20).content
-    input_path = f"/tmp/{uuid.uuid4().hex}.ogg"
+    # -----------------------------------------------------
+    # 1. Download audio (ANY FORMAT)
+    # -----------------------------------------------------
+    response = requests.get(audio_url, timeout=20)
+    audio_bytes = response.content
+
+    ext = get_audio_extension(audio_url, response.headers.get("Content-Type"))
+    input_path = f"/tmp/{uuid.uuid4().hex}.{ext}"
 
     with open(input_path, "wb") as f:
         f.write(audio_bytes)
 
-    # 2. STT
+    # -----------------------------------------------------
+    # 2. Speech-to-Text (STT)
+    # -----------------------------------------------------
     with open(input_path, "rb") as f:
         transcript = client.audio.transcriptions.create(
             model="gpt-4o-transcribe",
             file=f
         )
 
-    text = transcript.text
-    language = getattr(transcript, "language", "en")
+    text = transcript.text.strip()
 
-    # 3. Query core AI
-    request_id = call_query_api(text, user_id)
+    # -----------------------------------------------------
+    # 3. Detect intended language
+    # -----------------------------------------------------
+    language = detect_intent_language(text)
 
-    # 4. Poll result
+    # -----------------------------------------------------
+    # 4. Call core AI (force reply language)
+    # -----------------------------------------------------
+    forced_prompt = f"Answer strictly in {language}. {text}"
+
+    request_id = call_query_api(forced_prompt, user_id)
+
+    # -----------------------------------------------------
+    # 5. Poll result
+    # -----------------------------------------------------
     result = poll_result_api(request_id)
 
     if result.get("status") != "success":
         frappe.throw("Failed to get answer from core API")
 
-    answer = result.get("answer", "")
-    final_answer = translate_back(answer, language)
+    answer = result.get("answer", "").strip()
 
-    # 5. TTS
+    # -----------------------------------------------------
+    # 6. Text-to-Speech (TTS)
+    # -----------------------------------------------------
     output_path = f"/tmp/{uuid.uuid4().hex}.mp3"
 
     with client.audio.speech.with_streaming_response.create(
         model="gpt-4o-mini-tts",
         voice="alloy",
-        input=final_answer
+        input=answer
     ) as r:
         r.stream_to_file(output_path)
 
-    # 6. Save output file
+    # -----------------------------------------------------
+    # 7. Save audio file
+    # -----------------------------------------------------
     with open(output_path, "rb") as f:
         file_doc = frappe.get_doc({
             "doctype": "File",
@@ -152,9 +189,12 @@ def process():
         })
         file_doc.insert(ignore_permissions=True)
 
+    # -----------------------------------------------------
+    # 8. Response
+    # -----------------------------------------------------
     return {
         "transcribed_text": text,
-        "answer_text": final_answer,
+        "answer_text": answer,
         "audio_url": file_doc.file_url,
         "language": language
     }
