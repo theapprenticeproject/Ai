@@ -3,14 +3,14 @@
 import frappe
 import json
 import uuid
-from tap_ai.services.router import process_query as route_query
 from tap_ai.services.ratelimit import check_rate_limit
+from tap_ai.utils.mq import publish_to_queue
 
 @frappe.whitelist(methods=["POST"], allow_guest=True)
 def query():
     """
     Query API: Accepts 'q' and optional 'user_id'.
-    Returns: request_id immediately. Actual answer is computed in the background.
+    Returns: request_id immediately. Actual answer is computed by a RabbitMQ worker.
     """
     user_id = frappe.session.user
     data = frappe.local.form_dict or {}
@@ -52,72 +52,17 @@ def query():
         "answer": None,
         "query": q,
         "user_id": user_id,
-        "history": []
+        "history": [] # The worker will handle populating the actual history
     }))  
 
-    # Trigger background processing
-    frappe.enqueue("tap_ai.api.query._process_query",
-                   queue="long",
-                   timeout=300,
-                   request_id=request_id,
-                   query=q,
-                   user_id=user_id)
+    # Construct payload for the RabbitMQ worker
+    payload = {
+        "request_id": request_id,
+        "query": q,
+        "user_id": user_id
+    }
+
+    # Trigger background processing via RabbitMQ
+    publish_to_queue("text_query_queue", payload)
 
     return {"request_id": request_id}
-
-
-def _process_query(request_id: str, query: str, user_id: str):
-    """Background job to compute the answer and update cache."""
-    import frappe, json
-    from tap_ai.services.router import process_query as route_query
-
-    chat_history_key = f"chat_history_{user_id}"
-    chat_history = []
-
-    try:
-        # --- Fetch previous chat history safely ---
-        cached_history = frappe.cache().get(chat_history_key)
-        if cached_history:
-            if isinstance(cached_history, bytes):
-                cached_history = cached_history.decode("utf-8")
-            try:
-                chat_history = json.loads(cached_history)
-                if not isinstance(chat_history, list):
-                    chat_history = []
-            except Exception:
-                chat_history = []
-
-        # Call router/LLM logic 
-        out = route_query(query, chat_history=chat_history)
-
-        # Update history (last 10 messages) 
-        chat_history.append({"role": "user", "content": query})
-        chat_history.append({"role": "assistant", "content": out.get("answer", "")})
-        frappe.cache().set(chat_history_key, json.dumps(chat_history[-10:]))
-
-        # Store routed_doctypes in cache with request
-        metadata = out.get("metadata", {})
-        routed_doctypes = metadata.get("routed_doctypes", [])
-
-        # Update request in cache as 'success'
-        frappe.cache().set(request_id, json.dumps({
-            "status": "success",
-            "answer": out.get("answer"),
-            "query": query,
-            "user_id": user_id,
-            "history": chat_history[-10:],  # last 10
-            "routed_doctypes": routed_doctypes
-        }))
-
-        frappe.log_error(f"_process_query success for {request_id}", "Query Debug")
-
-    except Exception as e:
-        frappe.cache().set(request_id, json.dumps({
-            "status": "failed",
-            "answer": None,
-            "query": query,
-            "user_id": user_id,
-            "error": str(e),
-            "history": chat_history[-10:]
-        }))
-        frappe.log_error(f"_process_query failed for {request_id}: {e}", "Query Debug")
