@@ -28,7 +28,7 @@ def _pc() -> Pinecone:
 
 def _index():
     pc = _pc()
-    name = get_config("pinecone_index") or "tap-ai-byo"
+    name = get_config("pinecone_index") or "tap-lms-byo"
     return pc.Index(name)
 
 def _emb() -> OpenAIEmbeddings:
@@ -109,29 +109,34 @@ def _filter_excluded(doctypes: List[str]) -> List[str]:
 # Upsert pipeline
 # -------------------------------------------------------------------
 
-def upsert_doctype(
-    doctype: str,
-    since: Optional[str] = None,
-    group_records: int = 20,
-    embed_batch: int = 64,
-) -> Dict[str, Any]:
-
-    idx = _index()
-    emb = _emb()
-
-    total_records = 0
-    total_vectors = 0
-
-    table = f"tab{doctype}"
-    columns = get_db_columns_for_doctype(doctype)
-
-    if "name" in columns:
-        columns = ["name"] + [c for c in columns if c != "name"]
-
-    rows = frappe.get_all(
-        doctype,
-        fields=columns,
-        filters={"docstatus": ("<", 2)},
+def upsert_doctype(  
+    doctype: str,  
+    since: Optional[str] = None,  
+    group_records: int = 20,  
+    embed_batch: int = 64,  
+) -> Dict[str, Any]:  
+  
+    idx = _index()  
+    emb = _emb()  
+  
+    total_records = 0  
+    total_vectors = 0  
+  
+    table = f"tab{doctype}"  
+    columns = get_db_columns_for_doctype(doctype)  
+  
+    if "name" in columns:  
+        columns = ["name"] + [c for c in columns if c != "name"]  
+  
+    # Build filters - actually use the 'since' parameter  
+    filters = {"docstatus": ("<", 2)}  
+    if since:  
+        filters["modified"] = (">=", since)  
+  
+    rows = frappe.get_all(  
+        doctype,  
+        fields=columns,  
+        filters=filters,  # Now uses the since parameter  
     )
 
     buffer_texts, buffer_ids, buffer_meta = [], [], []

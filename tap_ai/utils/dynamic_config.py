@@ -8,6 +8,7 @@ Properly handles Student enrollment child table
 import frappe
 from typing import Dict, Any, Optional, List, Tuple
 import json
+from tap_ai.services.router import process_query  # Import the actual AI processor function to use in the API endpoint
 
 class DynamicConfig:
     """
@@ -379,96 +380,84 @@ def search_content(logical_entity: str, search_term: str, limit: int = 10) -> Li
 
 # ========== API Integration Example ==========
 
-@frappe.whitelist()
-def query_endpoint(**kwargs):
-    """
-    Dynamic API endpoint that adapts to LMS changes
-    NOW HANDLES ENROLLMENT CHILD TABLE!
-    """
-    # Extract params
-    user_type = kwargs.get('user_type')
-    glific_id = kwargs.get('glific_id')
-    context = kwargs.get('context', {})
-    batch_id = context.get('batch_id')  # Optional specific batch
-    
-    # Validate request
-    is_valid, error = DynamicConfig.validate_request(user_type, kwargs)
-    if not is_valid:
-        return {'success': False, 'error': error}
-    
-    # Get user profile dynamically (with enrollment handling!)
-    user_profile = DynamicConfig.get_user_profile(user_type, glific_id, batch_id)
-    if not user_profile:
-        return {'success': False, 'error': f'{user_type.title()} not found'}
-    
-    # Get content details if provided
-    content_details = None
-    content_type = context.get('content_type')
-    content_id = context.get('content_id')
-    
-    if content_type and content_id:
-        if not DynamicConfig.validate_content_type(user_type, content_type):
-            return {'success': False, 'error': f'Invalid content_type: {content_type}'}
-        
-        content_details = get_content_details(content_type, content_id)
-    
-    # Process query with TAP AI
-    answer = "Generated answer using AI..."
-    
-    return {
-        'success': True,
-        'answer': answer,
-        'user_profile': {
-            'name': user_profile['name'],
-            'batch': user_profile['batch'],  # From current enrollment
-            'enrollments': user_profile.get('enrollments', [])  # All enrollments
-        },
-        'content_details': content_details
-    }
 
-
-# ========== Hooks ==========
-
-def on_config_update(doc, method):
-    """Called when AI Integration Config is saved"""
-    DynamicConfig.clear_cache()
-    frappe.msgprint("AI Integration Config cache cleared. New configuration loaded.")
-
-
-def validate_config_consistency(doc, method):
-    """Validate that config is consistent before saving"""
-    try:
-        user_config = json.loads(doc.user_type_config or '{}')
-        doctype_map = json.loads(doc.doctype_mappings or '{}')
-        
-        # Check that all profile_doctypes and content_types are consistent
-        for user_type, config in user_config.items():
-            # Check enrollment_config if present
-            enrollment_config = config.get('enrollment_config')
-            if enrollment_config:
-                child_table = enrollment_config.get('child_table')
-                if not child_table:
-                    frappe.msgprint(
-                        f"Warning: {user_type} has enrollment_config but no child_table specified",
-                        indicator='orange'
-                    )
-            
-            # Check content_types exist in doctype_mappings
-            context_schema = config.get('context_schema', {})
-            content_type_config = context_schema.get('content_type', {})
-            
-            if isinstance(content_type_config, dict):
-                allowed = content_type_config.get('allowed_values', [])
-                valid_types = set(doctype_map.keys()) | {'general'}
-                
-                invalid = set(allowed) - valid_types
-                if invalid:
-                    frappe.throw(
-                        f"Invalid content_type(s) for {user_type}: {invalid}. "
-                        f"These must exist in doctype_mappings."
-                    )
-    
-    except json.JSONDecodeError as e:
-        frappe.throw(f"Invalid JSON format: {str(e)}")
-    except Exception as e:
-        frappe.log_error(f"Config validation error: {str(e)}")
+  
+@frappe.whitelist()  
+def query_endpoint(**kwargs):  
+    """  
+    Dynamic API endpoint that adapts to LMS changes  
+    NOW HANDLES ENROLLMENT CHILD TABLE!  
+    """  
+    # Extract params  
+    user_type = kwargs.get('user_type')  
+    glific_id = kwargs.get('glific_id')  
+    context = kwargs.get('context', {})  
+    batch_id = context.get('batch_id')  # Optional specific batch  
+    query = kwargs.get('query', '')  # Get the actual query  
+      
+    if not query:  
+        return {'success': False, 'error': 'Query parameter is required'}  
+      
+    # Validate request  
+    is_valid, error = DynamicConfig.validate_request(user_type, kwargs)  
+    if not is_valid:  
+        return {'success': False, 'error': error}  
+      
+    # Get user profile dynamically (with enrollment handling!)  
+    user_profile = DynamicConfig.get_user_profile(user_type, glific_id, batch_id)  
+    if not user_profile:  
+        return {'success': False, 'error': f'{user_type.title()} not found'}  
+      
+    # Get content details if provided  
+    content_details = None  
+    content_type = context.get('content_type')  
+    content_id = context.get('content_id')  
+      
+    if content_type and content_id:  
+        if not DynamicConfig.validate_content_type(user_type, content_type):  
+            return {'success': False, 'error': f'Invalid content_type: {content_type}'}  
+          
+        content_details = get_content_details(content_type, content_id)  
+      
+    # Get chat history for context  
+    history = []  
+    if user_profile.get('name'):  
+        history_key = f"chat_history_{user_profile['name']}"  
+        raw = frappe.cache().get(history_key)  
+        if raw:  
+            try:  
+                history = json.loads(raw) if isinstance(raw, str) else raw  
+            except Exception:  
+                history = []  
+      
+    # Process query with TAP AI - ACTUAL IMPLEMENTATION  
+    try:  
+        result = process_query(  
+            query=query,  
+            user_profile=user_profile,  
+            content_details=content_details,  
+            chat_history=history  
+        )  
+          
+        return {  
+            'success': True,  
+            'answer': result.get('answer', 'No answer generated'),  
+            'user_profile': {  
+                'name': user_profile['name'],  
+                'batch': user_profile['batch'],  # From current enrollment  
+                'enrollments': user_profile.get('enrollments', [])  # All enrollments  
+            },  
+            'content_details': content_details,  
+            'metadata': {  
+                'primary_engine': result.get('primary_engine'),  
+                'routed_doctypes': result.get('routed_doctypes', []),  
+                'fallback_used': result.get('fallback_used', False)  
+            }  
+        }  
+          
+    except Exception as e:  
+        frappe.log_error(f"Dynamic config query failed: {str(e)}")  
+        return {  
+            'success': False,   
+            'error': f'AI processing failed: {str(e)}'  
+        }

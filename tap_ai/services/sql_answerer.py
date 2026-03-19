@@ -132,71 +132,81 @@ Example good queries:
 """
 
 
-def _generate_sql_query(
-    query: str,
-    schema_prompt: str,
-    user_profile: Optional[Dict] = None
-) -> str:
-    """
-    Uses LLM to generate SQL from natural language query.
-    
-    Args:
-        query: User's natural language question
-        schema_prompt: Enriched schema description
-        user_profile: Optional user profile for context
-    
-    Returns:
-        Generated SQL query string
-    """
-    llm = _llm()
-    
-    # Build user prompt with context hints
-    user_prompt_parts = [
-        f"QUESTION: {query}",
-        "",
-        schema_prompt
-    ]
-    
-    # Add specific instructions for user context
-    if user_profile:
-        if user_profile.get('grade'):
-            user_prompt_parts.append(
-                f"\nIMPORTANT: User is in Grade {user_profile['grade']}. "
-                f"Filter by grade = '{user_profile['grade']}' when querying student content like videos, quizzes, assignments."
-            )
-        
-        if user_profile.get('batch'):
-            user_prompt_parts.append(
-                f"User's batch is {user_profile['batch']}. Consider filtering by batch when relevant."
-            )
-    else:
-        user_prompt_parts.append(
-            "\nNote: This is an anonymous query. Return general content without user-specific filters."
-        )
-    
-    user_prompt = "\n".join(user_prompt_parts)
-    
-    try:
-        resp = llm.invoke([
-            ("system", SQL_GENERATION_PROMPT),
-            ("user", user_prompt)
-        ])
-        sql = getattr(resp, "content", "").strip()
-        
-        # Clean up the SQL
-        sql = sql.replace("```sql", "").replace("```", "").strip()
-        
-        # Add LIMIT if missing
-        if "LIMIT" not in sql.upper():
-            sql += " LIMIT 20"
-        
-        print(f"> Generated SQL: {sql[:200]}...")
-        return sql
-        
-    except Exception as e:
-        frappe.log_error(f"SQL generation failed: {e}")
-        raise Exception(f"Failed to generate SQL query: {str(e)}")
-
+def _generate_sql_query(  
+    query: str,  
+    schema_prompt: str,  
+    user_profile: Optional[Dict] = None,  
+    chat_history: Optional[List[Dict[str, str]]] = None  # Add chat_history parameter  
+) -> str:  
+    """  
+    Uses LLM to generate SQL from natural language query.  
+      
+    Args:  
+        query: User's natural language question  
+        schema_prompt: Enriched schema description  
+        user_profile: Optional user profile for context  
+        chat_history: Optional conversation history for context  
+      
+    Returns:  
+        Generated SQL query string  
+    """  
+    llm = _llm()  
+      
+    # Build user prompt with context hints  
+    user_prompt_parts = [  
+        f"QUESTION: {query}",  
+        "",  
+        schema_prompt  
+    ]  
+      
+    # Add conversation history if available  
+    if chat_history:  
+        history_text = "\n".join([  
+            f"{msg.get('role', 'unknown').title()}: {msg.get('content', '')}"  
+            for msg in chat_history[-5:]  # Last 5 messages for context  
+        ])  
+        user_prompt_parts.append(f"\nCONVERSATION HISTORY:\n{history_text}")  
+        user_prompt_parts.append("\nConsider the conversation context when generating the SQL query.")  
+      
+    # Add specific instructions for user context  
+    if user_profile:  
+        if user_profile.get('grade'):  
+            user_prompt_parts.append(  
+                f"\nIMPORTANT: User is in Grade {user_profile['grade']}. "  
+                f"Filter by grade = '{user_profile['grade']}' when querying student content like videos, quizzes, assignments."  
+            )  
+          
+        if user_profile.get('batch'):  
+            user_prompt_parts.append(  
+                f"User's batch is {user_profile['batch']}. Consider filtering by batch when relevant."  
+            )  
+    else:  
+        user_prompt_parts.append(  
+            "\nNote: This is an anonymous query. Return general content without user-specific filters."  
+        )  
+      
+    user_prompt = "\n".join(user_prompt_parts)  
+      
+    try:  
+        resp = llm.invoke([  
+            ("system", SQL_GENERATION_PROMPT),  
+            ("user", user_prompt)  
+        ])  
+        sql = getattr(resp, "content", "").strip()  
+          
+        # Clean up the SQL  
+        sql = sql.replace("```sql", "").replace("```", "").strip()  
+          
+        # Add LIMIT if missing  
+        if "LIMIT" not in sql.upper():  
+            sql += " LIMIT 20"  
+          
+        print(f"> Generated SQL: {sql[:200]}...")  
+        return sql  
+          
+    except Exception as e:  
+        frappe.log_error(f"SQL generation failed: {e}")  
+        raise Exception(f"Failed to generate SQL query: {str(e)}")  
 
 # --- SQL Execution ---
 
@@ -321,12 +331,12 @@ Provide a helpful answer based on these results."""
 
 # --- Main Function ---
 
-def answer_from_sql(
-    query: str,
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
-    chat_history: Optional[List[Dict[str, str]]] = None
-) -> Dict[str, Any]:
+def answer_from_sql(  
+    query: str,  
+    user_profile: Optional[Dict[str, Any]] = None,  
+    content_details: Optional[Dict[str, Any]] = None,  
+    chat_history: Optional[List[Dict[str, str]]] = None  
+) -> Dict[str, Any]: 
     """
     Main Text-to-SQL entry point with optional user context.
     
@@ -357,9 +367,9 @@ def answer_from_sql(
         print("> Building schema prompt...")
         schema_prompt = _build_enriched_schema_prompt(user_profile)
         
-        # Step 2: Generate SQL query
-        print("> Generating SQL query...")
-        sql_query = _generate_sql_query(query, schema_prompt, user_profile)
+        # Step 2: Generate SQL query - now pass chat_history  
+        print("> Generating SQL query...")  
+        sql_query = _generate_sql_query(query, schema_prompt, user_profile, chat_history)  
         
         # Step 3: Execute SQL
         print("> Executing SQL query...")
