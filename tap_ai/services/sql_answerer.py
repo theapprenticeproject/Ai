@@ -17,14 +17,12 @@ from tap_ai.infra.sql_catalog import load_schema
 
 # --- LLM Initialization ---
 
-def _llm(model: str = "gpt-4o-mini", temperature: float = 0.0) -> ChatOpenAI:
-    """Initializes the Language Model client for SQL generation."""
-    api_key = get_config("openai_api_key")
-    return ChatOpenAI(
-        model_name=model,
-        openai_api_key=api_key,
-        temperature=temperature,
-        max_tokens=800
+def _llm(model: str = "gpt-4o-mini", temperature: float = 0.0) -> ChatOpenAI:  
+    from tap_ai.infra.llm_client import LLMClient  
+    return LLMClient.get_client(  
+        model=model,  
+        temperature=temperature,  
+        max_tokens=800  
     )
 
 

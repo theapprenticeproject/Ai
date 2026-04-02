@@ -13,6 +13,11 @@ from tap_ai.infra.sql_catalog import load_schema
 
 logger = logging.getLogger(__name__)
 
+  
+# Cache configuration  
+CACHE_TTL = 300  # 5 minutes  
+CACHE_PREFIX = "doctype_selector:"  
+
 SYSTEM_PROMPT = """You are a routing assistant.
 
 Given:
@@ -73,27 +78,53 @@ def _schema_summary(schema: Dict[str, Any]) -> Dict[str, Any]:
         "links": links[:25],
     }
 
+def _get_cache_key(query: str, top_n: int, user_profile_json: Optional[str] = None) -> str:  
+    """Generate cache key for doctype selection"""  
+    key_data = f"{query}_{top_n}_{user_profile_json or ''}"  
+    return f"{CACHE_PREFIX}{hashlib.md5(key_data.encode()).hexdigest()}"  
+  
+def _get_cached_result(cache_key: str) -> Optional[List[str]]:  
+    """Get cached doctype selection result"""  
+    try:  
+        cached = frappe.cache().get(cache_key)  
+        if cached:  
+            return json.loads(cached)  
+    except Exception:  
+        pass  
+    return None  
+  
+def _cache_result(cache_key: str, result: List[str]) -> None:  
+    """Cache doctype selection result"""  
+    try:  
+        frappe.cache().set(cache_key, json.dumps(result), expire_in_seconds=CACHE_TTL)  
+    except Exception:  
+        pass  
 
-@lru_cache(maxsize=256)
-def pick_doctypes(
-    query: str,
-    top_n: int = 5,
-    user_profile_json: Optional[str] = None,
-) -> List[str]:
-    """
-    Pick the most relevant DocTypes for a query.
 
-    NOTE:
-    - user_profile_json is a JSON string for cache safety
-    - Pass None if no user context
-    """
-    query = (query or "").strip().lower()
-    schema = load_schema()
-    summary = _schema_summary(schema)
-    llm = _llm()
-
-    if not llm:
-        return []
+def pick_doctypes(  
+    query: str,  
+    top_n: int = 5,  
+    user_profile_json: Optional[str] = None,  
+) -> List[str]:  
+    """  
+    Pick the most relevant DocTypes for a query.  
+    Uses Redis-based caching for multi-process consistency.  
+    """  
+    query = (query or "").strip().lower()  
+      
+    # Check cache first  
+    cache_key = _get_cache_key(query, top_n, user_profile_json)  
+    cached_result = _get_cached_result(cache_key)  
+    if cached_result is not None:  
+        return cached_result  
+      
+    # Generate result  
+    schema = load_schema()  
+    summary = _schema_summary(schema)  
+    llm = _llm()  
+  
+    if not llm:  
+        return [] 
 
     # Decode user profile (optional)
     user_profile = None
@@ -120,22 +151,38 @@ def pick_doctypes(
         f"SCHEMA SUMMARY:\n{schema_snippet}"
     )
 
-    try:
-        resp = llm.invoke(
-            [
-                ("system", SYSTEM_PROMPT),
-                ("user", user_msg),
-            ]
-        )
-        txt = resp.content.strip()
-        data = json.loads(txt)
-        doctypes = data.get("doctypes", [])
-
-        return _normalize_doctypes(doctypes, summary)[:top_n]
-
-    except Exception as e:
-        logger.warning("DocType selection LLM failed: %s", e)
-        return []
+    try:  
+        resp = llm.invoke(  
+            [  
+                ("system", SYSTEM_PROMPT),  
+                ("user", user_msg),  
+            ]  
+        )  
+        txt = resp.content.strip()  
+        data = json.loads(txt)  
+        doctypes = data.get("doctypes", [])  
+        result = _normalize_doctypes(doctypes, summary)[:top_n]  
+          
+        # Cache the result  
+        _cache_result(cache_key, result)  
+          
+        return result  
+  
+    except Exception as e:  
+        logger.warning("DocType selection LLM failed: %s", e)  
+        return []  
+  
+def clear_doctype_cache():  
+    """Clear all doctype selection cache"""  
+    try:  
+        # Get all cache keys with our prefix  
+        # Note: This requires Redis SCAN command support  
+        cache_keys = frappe.cache().get_keys(f"{CACHE_PREFIX}*")  
+        for key in cache_keys:  
+            frappe.cache().delete(key)  
+    except Exception:  
+        # Fallback: just let them expire naturally  
+        pass
 
 
 def _normalize_doctypes(

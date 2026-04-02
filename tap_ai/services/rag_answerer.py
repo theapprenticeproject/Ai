@@ -26,14 +26,13 @@ from tap_ai.services.pinecone_store import (
 # LLM INITIALIZATION
 # ======================================================
 
-def _llm(model: str = "gpt-4o-mini", temperature: float = 0.2) -> ChatOpenAI:
-    api_key = get_config("openai_api_key")
-    return ChatOpenAI(
-        model_name=model,
-        openai_api_key=api_key,
-        temperature=temperature,
-        max_tokens=1500,
-    )
+def _llm(model: str = "gpt-4o-mini", temperature: float = 0.2) -> ChatOpenAI:  
+    from tap_ai.infra.llm_client import LLMClient  
+    return LLMClient.get_client(  
+        model=model,  
+        temperature=temperature,  
+        max_tokens=1500  
+    ) 
 
 
 # ======================================================
