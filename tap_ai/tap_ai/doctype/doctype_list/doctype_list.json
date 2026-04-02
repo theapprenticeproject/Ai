@@ -11,9 +11,8 @@
  "fields": [
   {
    "fieldname": "doctype_name",
-   "fieldtype": "Link",
-   "label": "Doctype Name",
-   "options": "DocType"
+   "fieldtype": "Data",
+   "label": "Doctype Name"
   }
  ],
  "grid_page_length": 50,
