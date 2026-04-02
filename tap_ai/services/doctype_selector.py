@@ -2,6 +2,7 @@
 
 import json
 import logging
+import hashlib
 from typing import List, Dict, Any, Optional
 from functools import lru_cache
 
