@@ -6,45 +6,79 @@ Properly handles Student enrollment child table
 """
 
 import frappe
+import json
+import time
 from typing import Dict, Any, Optional, List, Tuple
 import json
 from tap_ai.services.router import process_query  # Import the actual AI processor function to use in the API endpoint
 
 class DynamicConfig:
     """
-    Central configuration handler that decouples TAP AI from TAP LMS
+    Central configuration handler that decouples TAP AI from TAP LMS with TTL-based cache invalidation
     NOW PROPERLY HANDLES CHILD TABLES (like Student.enrollment)
     """
     
-    _instance = None
-    _config_cache = None
+    _instance = None  
+    _config_cache = {  
+        'data': None,  
+        'timestamp': 0,  
+        'ttl': 300  # 5 minutes default TTL  
+    }  
     
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def __new__(cls):  
+        if cls._instance is None:  
+            cls._instance = super().__new__(cls)  
+        return cls._instance  
     
-    @classmethod
-    def get_config(cls) -> Dict[str, Any]:
-        """Get cached configuration"""
-        if cls._config_cache is None:
-            config_doc = frappe.get_single("AI Integration Config")
-            cls._config_cache = {
-                'user_type_config': json.loads(config_doc.user_type_config or '{}'),
-                'doctype_mappings': json.loads(config_doc.doctype_mappings or '{}'),
-                'context_resolution_rules': json.loads(config_doc.context_resolution_rules or '{}'),
-                'response_templates': json.loads(config_doc.response_templates or '{}'),
-                'fallback_behavior': json.loads(config_doc.fallback_behavior or '{}'),
-                'enabled': config_doc.enabled,
-                'cache_ttl': config_doc.cache_ttl,
-                'enable_logging': config_doc.enable_logging
-            }
-        return cls._config_cache
+    @classmethod  
+    def get_config(cls, force_refresh: bool = False) -> Dict[str, Any]:  
+        """  
+        Get cached configuration with TTL-based invalidation.  
+          
+        Args:  
+            force_refresh: If True, bypass cache and reload from database  
+        """  
+        current_time = time.time()  
+          
+        # Check if cache is valid  
+        if (not force_refresh and   
+            cls._config_cache['data'] is not None and   
+            current_time - cls._config_cache['timestamp'] < cls._config_cache['ttl']):  
+            return cls._config_cache['data']  
+          
+        # Load from database  
+        try:  
+            config_doc = frappe.get_single("AI Integration Config")  
+            cls._config_cache['data'] = {  
+                'user_type_config': json.loads(config_doc.user_type_config or '{}'),  
+                'doctype_mappings': json.loads(config_doc.doctype_mappings or '{}'),  
+                'context_resolution_rules': json.loads(config_doc.context_resolution_rules or '{}'),  
+                'response_templates': json.loads(config_doc.response_templates or '{}'),  
+                'fallback_behavior': json.loads(config_doc.fallback_behavior or '{}'),  
+                'enabled': config_doc.enabled,  
+                'cache_ttl': config_doc.cache_ttl or 300,  
+                'enable_logging': config_doc.enable_logging  
+            }  
+            cls._config_cache['timestamp'] = current_time  
+            cls._config_cache['ttl'] = cls._config_cache['data']['cache_ttl']  
+              
+        except Exception as e:  
+            frappe.log_error(f"Failed to load DynamicConfig: {e}")  
+            # Return cached data even if expired, or empty dict if no cache  
+            return cls._config_cache['data'] or {}  
+          
+        return cls._config_cache['data'] 
     
-    @classmethod
-    def clear_cache(cls):
-        """Clear cached config - call this when config is updated"""
-        cls._config_cache = None
+    @classmethod  
+    def clear_cache(cls):  
+        """Clear cached config"""  
+        cls._config_cache['data'] = None  
+        cls._config_cache['timestamp'] = 0  
+      
+    @classmethod  
+    def set_cache_ttl(cls, ttl: int):  
+        """Set custom cache TTL in seconds"""  
+        cls._config_cache['ttl'] = ttl  
     
     # ========== User Type Configuration Methods ==========
     
@@ -377,7 +411,15 @@ def search_content(logical_entity: str, search_term: str, limit: int = 10) -> Li
         frappe.log_error(f"Error searching {logical_entity}: {str(e)}")
         return []
 
-
+# Hook to clear cache when config is updated  
+def on_config_update(doc, method):  
+    """Clear cache when AI Integration Config is updated"""  
+    DynamicConfig.clear_cache()  
+  
+# Register the hook  
+if frappe.db:  
+    frappe.whitelist()(on_config_update)
+    
 # ========== API Integration Example ==========
 
 
