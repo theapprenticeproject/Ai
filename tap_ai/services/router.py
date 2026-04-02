@@ -25,14 +25,12 @@ from tap_ai.services.rag_answerer import answer_from_pinecone
 # LLM INITIALIZATION
 # ======================================================
 
-def _llm() -> ChatOpenAI:
-    api_key = get_config("openai_api_key")
-    model = get_config("primary_llm_model") or "gpt-4o-mini"
-    return ChatOpenAI(
-        model_name=model,
-        openai_api_key=api_key,
-        temperature=0.0
-    )
+def _llm() -> ChatOpenAI:  
+    from tap_ai.infra.llm_client import LLMClient  
+    return LLMClient.get_client(  
+        model=get_config("primary_llm_model") or "gpt-4o-mini",  
+        temperature=0.0  
+    )  
 
 
 # ======================================================
