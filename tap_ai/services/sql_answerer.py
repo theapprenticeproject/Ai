@@ -208,26 +208,29 @@ def _generate_sql_query(
 
 # --- SQL Execution ---
 
+# --- SQL Execution ---
+
 def _execute_sql(sql: str) -> List[Dict[str, Any]]:
     """
     Executes SQL query safely and returns results.
-    
+
     Args:
         sql: SQL query string
-    
+
     Returns:
         List of result dictionaries
     """
     try:
-        # Execute as dict for easier processing
-        results = frappe.db.sql(sql, as_dict=True)
+        # Use remote database instead of local frappe.db
+        from tap_ai.utils.remote_db import execute_remote_query
+        results = execute_remote_query(sql)
         print(f"> SQL returned {len(results)} rows")
         return results
-        
+
     except Exception as e:
         error_msg = str(e)
         frappe.log_error(f"SQL execution failed: {error_msg}\nSQL: {sql}")
-        
+
         # Return user-friendly error
         if "doesn't exist" in error_msg:
             raise Exception("The query referenced tables that don't exist in the database.")

@@ -76,10 +76,15 @@ def _record_to_text(doctype: str, row: Dict[str, Any]) -> str:
 def get_db_columns_for_doctype(doctype: str) -> List[str]:
     table = f"tab{doctype}"
     try:
-        return frappe.db.get_table_columns(table) or []
+        from tap_ai.utils.remote_db import get_remote_table_columns
+        return get_remote_table_columns(doctype) or []
     except Exception:
-        desc = frappe.db.sql(f"DESCRIBE `{table}`", as_dict=True)
-        return [d["Field"] for d in desc]
+        # Fallback to local DB if remote fails
+        try:
+            desc = frappe.db.sql(f"DESCRIBE `{table}`", as_dict=True)
+            return [d["Field"] for d in desc]
+        except Exception:
+            return []
 
 
 # -------------------------------------------------------------------
@@ -230,29 +235,48 @@ def upsert_all(
 # SEARCH (THIS IS THE IMPORTANT PART)
 # -------------------------------------------------------------------
 
-def search_auto_namespaces(
-    q: str,
-    k: int = 8,
-    route_top_n: int = 4,
-    filters: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+def search_auto_namespaces(  
+    q: str,  
+    k: int = 8,  
+    route_top_n: int = 4,  
+    filters: Optional[Dict[str, Any]] = None,  
+) -> Dict[str, Any]:  
+  
+    idx = _index()  
+    emb = _emb()  
+  
+    # 1. Route doctypes using LLM  
+    doctypes = pick_doctypes(q, top_n=route_top_n) or []  
+  
+    # 2. Enforce exclusion list  
+    doctypes = _filter_excluded(doctypes)  
+  
+    # 3. NEW: Filter out system DocTypes for content queries  
+    system_doctypes = {"AI Knowledge Base"}  
+    content_doctypes = [dt for dt in doctypes if dt not in system_doctypes]  
+      
+    # Only use content doctypes if we found any  
+    if content_doctypes:  
+        doctypes = content_doctypes  
+  
+    # 4. Fallback to content DocTypes if routing failed  
+    if not doctypes:  
+        schema = load_schema()  
+        all_allowed = [  
+            t.replace("tab", "")  
+            for t in schema.get("allowlist", [])  
+        ]  
+        # Prefer content DocTypes in fallback  
+        content_priority = [  
+            "VideoClass", "Course", "LearningObjective", "NoteContent",  
+            "Quiz", "Assignment", "LearningUnit"  
+        ]  
+        doctypes = [dt for dt in content_priority if dt in all_allowed][:route_top_n]  
+          
+        # If no content DocTypes found, use any allowed  
+        if not doctypes:  
+            doctypes = all_allowed[:route_top_n]  
 
-    idx = _index()
-    emb = _emb()
-
-    # 1. Route doctypes using LLM
-    doctypes = pick_doctypes(q, top_n=route_top_n) or []
-
-    # 2. Enforce exclusion list
-    doctypes = _filter_excluded(doctypes)
-
-    # 3. Fallback to schema allowlist if routing failed
-    if not doctypes:
-        schema = load_schema()
-        doctypes = [
-            t.replace("tab", "")
-            for t in schema.get("allowlist", [])[:route_top_n]
-        ]
 
     qvec = emb.embed_query(q)
     all_matches: List[Dict[str, Any]] = []
