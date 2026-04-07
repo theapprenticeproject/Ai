@@ -422,6 +422,18 @@ if frappe.db:
     
 # ========== API Integration Example ==========
 
+from tap_ai.services.router import _get_history_from_cache, _save_history_to_cache, _append_history_to_db, get_session_transcript, list_sessions_for_user
+
+def get_or_create_session_id(user_id: str) -> str:
+    """Get or create an active session ID for a user"""
+    key = f"active_session_{user_id}"
+    session_id = frappe.cache().get(key)
+    if not session_id:
+        import uuid
+        session_id = uuid.uuid4().hex[:16]
+        frappe.cache().set(key, session_id, expire_in_seconds=3600)  # 1 hour
+    return session_id
+
 
   
 @frappe.whitelist()  
@@ -461,16 +473,11 @@ def query_endpoint(**kwargs):
           
         content_details = get_content_details(content_type, content_id)  
       
-    # Get chat history for context  
-    history = []  
-    if user_profile.get('name'):  
-        history_key = f"chat_history_{user_profile['name']}"  
-        raw = frappe.cache().get(history_key)  
-        if raw:  
-            try:  
-                history = json.loads(raw) if isinstance(raw, str) else raw  
-            except Exception:  
-                history = []  
+    # Get or create session ID for conversation grouping  
+    session_id = kwargs.get('session_id') or get_or_create_session_id(user_profile['name'])  
+      
+    # Get chat history for context using session-aware cache  
+    history = _get_history_from_cache(user_profile['name'], session_id=session_id)  
       
     # Process query with TAP AI - ACTUAL IMPLEMENTATION  
     try:  
@@ -481,9 +488,21 @@ def query_endpoint(**kwargs):
             chat_history=history  
         )  
           
+        # Update and persist chat history  
+        history.append({"role": "user", "content": query})  
+        history.append({"role": "assistant", "content": result.get("answer", "")})  
+        _save_history_to_cache(user_profile['name'], history, session_id=session_id)  
+        _append_history_to_db(  
+            user_profile['name'],  
+            [{"role": "user", "content": query}, {"role": "assistant", "content": result.get("answer", "")}],  
+            session_id=session_id,  
+            metadata={"source": "api"}  
+        )  
+          
         return {  
             'success': True,  
             'answer': result.get('answer', 'No answer generated'),  
+            'session_id': session_id,  
             'user_profile': {  
                 'name': user_profile['name'],  
                 'batch': user_profile['batch'],  # From current enrollment  
@@ -503,3 +522,25 @@ def query_endpoint(**kwargs):
             'success': False,   
             'error': f'AI processing failed: {str(e)}'  
         }
+
+
+@frappe.whitelist()
+def get_transcript(session_id: str, user_id: Optional[str] = None, limit: Optional[int] = None):
+    """Get full transcript for a session"""
+    try:
+        transcript = get_session_transcript(session_id, user_id=user_id, limit=limit)
+        return {'success': True, 'transcript': transcript}
+    except Exception as e:
+        frappe.log_error(f"Transcript retrieval failed: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+
+@frappe.whitelist()
+def list_user_sessions(user_id: str, limit: int = 20):
+    """List all sessions for a user"""
+    try:
+        sessions = list_sessions_for_user(user_id, limit=limit)
+        return {'success': True, 'sessions': sessions}
+    except Exception as e:
+        frappe.log_error(f"Session listing failed: {str(e)}")
+        return {'success': False, 'error': str(e)}

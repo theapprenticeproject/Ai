@@ -68,6 +68,10 @@ class TAPConfig:
             "max_response_tokens": 500,
             "batch_size": 100,
 
+            # Persistence
+            "enable_db_history": False,
+            "chat_history_db_table": "tabAIChatHistory",
+
             # Flags
             "enable_neo4j": True,
             "enable_redis": True,

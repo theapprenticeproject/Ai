@@ -11,6 +11,7 @@ Rich metadata
 """
 
 import json
+import uuid
 from typing import Dict, Any, List, Optional
 
 import frappe
@@ -205,24 +206,179 @@ def process_query(
 # RESILIENT CACHE FOR CHAT HISTORY
 # ======================================================
 
-def _get_history_from_cache(user_id: str) -> List[Dict[str, str]]:
+CHAT_HISTORY_TABLE = get_config("chat_history_db_table") or "tabAIChatHistory"
+
+
+def _cache_key(user_id: str, session_id: Optional[str] = None) -> str:
+    return f"chat_history_{user_id}:{session_id}" if session_id else f"chat_history_{user_id}"
+
+
+def _ensure_chat_history_table_exists():
+    if not get_config("enable_db_history"):
+        return
+
     try:
-        key = f"chat_history_{user_id}"
+        frappe.db.sql(
+            f"""
+            CREATE TABLE IF NOT EXISTS `{CHAT_HISTORY_TABLE}` (
+                name VARCHAR(255) PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                session_id VARCHAR(255),
+                role VARCHAR(50) NOT NULL,
+                content TEXT NOT NULL,
+                metadata TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        frappe.db.commit()
+    except Exception as e:
+        frappe.log_error(f"Chat history table creation failed: {e}", "tap_ai.services.router")
+
+
+def _get_history_from_db(
+    user_id: str,
+    session_id: Optional[str] = None,
+    limit: int = 10
+) -> List[Dict[str, str]]:
+    if not get_config("enable_db_history"):
+        return []
+
+    try:
+        _ensure_chat_history_table_exists()
+
+        if session_id:
+            rows = frappe.db.sql(
+                f"SELECT role, content FROM `{CHAT_HISTORY_TABLE}` WHERE user_id = %s AND session_id = %s ORDER BY created_at DESC LIMIT %s",
+                (user_id, session_id, limit),
+                as_dict=True,
+            )
+        else:
+            rows = frappe.db.sql(
+                f"SELECT role, content FROM `{CHAT_HISTORY_TABLE}` WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+                (user_id, limit),
+                as_dict=True,
+            )
+
+        return [{"role": row.role, "content": row.content} for row in reversed(rows)]
+    except Exception as e:
+        print(f"> DB history load failed: {e}")
+        return []
+
+
+def _append_history_to_db(
+    user_id: str,
+    messages: List[Dict[str, str]],
+    session_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+):
+    if not get_config("enable_db_history") or not messages:
+        return
+
+    metadata = metadata or {}
+    try:
+        _ensure_chat_history_table_exists()
+        for message in messages:
+            frappe.db.sql(
+                f"INSERT INTO `{CHAT_HISTORY_TABLE}` (name, user_id, session_id, role, content, metadata) VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    uuid.uuid4().hex,
+                    user_id,
+                    session_id,
+                    message.get("role"),
+                    message.get("content"),
+                    json.dumps(metadata),
+                ),
+            )
+        frappe.db.commit()
+    except Exception as e:
+        frappe.log_error(f"Chat history save failed: {e}", "tap_ai.services.router")
+
+
+def _get_history_from_cache(
+    user_id: str,
+    session_id: Optional[str] = None
+) -> List[Dict[str, str]]:
+    try:
+        key = _cache_key(user_id, session_id)
         raw = frappe.cache().get(key)
         if isinstance(raw, bytes):
             raw = raw.decode()
-        return json.loads(raw) if raw else []
+        history = json.loads(raw) if raw else []
+        if history:
+            return history
+
+        # Fallback: hydrate live cache from durable DB history
+        return _get_history_from_db(user_id, session_id=session_id, limit=10)
     except Exception as e:
         print(f"> History load failed: {e}")
         return []
 
 
-def _save_history_to_cache(user_id: str, history: List[Dict[str, str]]):
+def _save_history_to_cache(
+    user_id: str,
+    history: List[Dict[str, str]],
+    session_id: Optional[str] = None
+):
     try:
-        key = f"chat_history_{user_id}"
+        key = _cache_key(user_id, session_id)
         frappe.cache().set(key, json.dumps(history[-10:]))
     except Exception as e:
         print(f"> History save failed: {e}")
+
+
+def get_session_transcript(
+    session_id: str,
+    user_id: Optional[str] = None,
+    limit: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    if not get_config("enable_db_history"):
+        return []
+
+    _ensure_chat_history_table_exists()
+    sql = f"SELECT role, content, metadata, created_at FROM `{CHAT_HISTORY_TABLE}` WHERE session_id = %s"
+    params = [session_id]
+    if user_id:
+        sql += " AND user_id = %s"
+        params.append(user_id)
+    sql += " ORDER BY created_at ASC"
+    if limit:
+        sql += " LIMIT %s"
+        params.append(limit)
+
+    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+    return [
+        {
+            "role": row.role,
+            "content": row.content,
+            "metadata": json.loads(row.metadata) if row.metadata else {},
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+def list_sessions_for_user(user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+    if not get_config("enable_db_history"):
+        return []
+
+    _ensure_chat_history_table_exists()
+    rows = frappe.db.sql(
+        f"SELECT session_id, MIN(created_at) AS started_at, MAX(created_at) AS last_activity_at, COUNT(*) AS turns FROM `{CHAT_HISTORY_TABLE}` WHERE user_id = %s GROUP BY session_id ORDER BY last_activity_at DESC LIMIT %s",
+        (user_id, limit),
+        as_dict=True,
+    )
+
+    return [
+        {
+            "session_id": row.session_id,
+            "started_at": row.started_at,
+            "last_activity_at": row.last_activity_at,
+            "turns": row.turns,
+        }
+        for row in rows
+        if row.session_id
+    ]
 
 
 # ======================================================
