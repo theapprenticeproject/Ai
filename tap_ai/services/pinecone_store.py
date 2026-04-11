@@ -175,7 +175,6 @@ def upsert_doctype(
                     "doctype": doctype,
                     "record_ids": record_ids,
                     "count": len(group),
-                    "text": text,
                 }
 
                 # Ensure ID is strictly ASCII for Pinecone
@@ -204,7 +203,6 @@ def upsert_doctype(
                 "doctype": doctype,
                 "record_ids": record_ids,
                 "count": len(group),
-                "text": text,
             })
 
         flush()
