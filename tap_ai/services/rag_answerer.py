@@ -217,6 +217,8 @@ Use friendly, age-appropriate language.
 
 def answer_from_pinecone(
     query: str,
+    k: int = 15,
+    route_top_n: int = 5,
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
@@ -236,8 +238,8 @@ def answer_from_pinecone(
     # 3. Pinecone search
     search_result = search_auto_namespaces(
         q=refined_query,
-        k=15,
-        route_top_n=5,
+        k=k,
+        route_top_n=route_top_n,
         filters=metadata_filter,
     )
 
@@ -300,4 +302,4 @@ def cli(q: str, k: int = 8, route_top_n: int = 4):
     bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points'}"
     bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Can you provide a summary of the video titled Needs First, Wants Later (2024)'}"
     """
-    return answer_from_pinecone(q=q, k=k, route_top_n=route_top_n)
+    return answer_from_pinecone(query=q, k=k, route_top_n=route_top_n)
