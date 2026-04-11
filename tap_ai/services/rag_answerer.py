@@ -144,7 +144,7 @@ def _build_context_from_hits(
             rows = get_remote_all(
                 doctype,
                 fields=fields,
-                filters={"name": ("in", record_ids)},
+                filters={"name": ["in", record_ids]},
             )
 
             for row in rows:

@@ -90,7 +90,10 @@ def execute_remote_query(sql: str, params: Optional[tuple] = None) -> List[Dict[
         conn = get_remote_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        cursor.execute(sql, params or ())
+        if params is None or len(params) == 0:
+            cursor.execute(sql)
+        else:
+            cursor.execute(sql, params)
         results = cursor.fetchall()
 
         cursor.close()

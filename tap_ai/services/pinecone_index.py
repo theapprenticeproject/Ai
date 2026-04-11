@@ -26,7 +26,7 @@ def ensure_index(
     Dimension must match your embedding model (e.g. OpenAI text-embedding-3-small = 1536).
     """
     pc = _pc()
-    name = index_name or get_config("pinecone_index") or "tap-ai-byo"
+    name = "tap-lms-byo" or index_name or get_config("pinecone_index")
     dim = int(dimension or get_config("embedding_dimension") or 1536)
 
     if name not in pc.list_indexes().names():
@@ -51,8 +51,8 @@ def delete_index(index_name: Optional[str] = None) -> dict:
     Deletes the specified Pinecone index. This is irreversible.
     """
     pc = _pc()
-    name = index_name or get_config("pinecone_index") or "tap-ai-byo"
-    
+    name = "tap-lms-byo" or index_name or get_config("pinecone_index")
+
     if name in pc.list_indexes().names():
         print(f"Attempting to delete index '{name}'. This is irreversible...")
         pc.delete_index(name)
@@ -64,6 +64,9 @@ def delete_index(index_name: Optional[str] = None) -> dict:
 
 # ---- bench CLI ----
 def cli_ensure_index(index_name: Optional[str] = None, dimension: Optional[int] = None):
+    '''
+    bench execute tap_ai.services.pinecone_index.cli_ensure_index
+    '''
     out = ensure_index(index_name=index_name, dimension=dimension)
     print(frappe.as_json(out))
     return out

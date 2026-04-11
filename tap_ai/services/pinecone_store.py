@@ -14,6 +14,7 @@ from langchain_openai import OpenAIEmbeddings
 from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema
 from tap_ai.services.doctype_selector import pick_doctypes
+from tap_ai.utils.remote_db import execute_remote_query
 
 
 # -------------------------------------------------------------------
@@ -117,8 +118,8 @@ def _filter_excluded(doctypes: List[str]) -> List[str]:
 def upsert_doctype(  
     doctype: str,  
     since: Optional[str] = None,  
-    group_records: int = 20,  
-    embed_batch: int = 64,  
+    group_records: int = 10,   # Reduced from 20 to handle large transcripts
+    embed_batch: int = 10,     # Reduced from 64 to prevent OpenAI token limits
 ) -> Dict[str, Any]:  
   
     idx = _index()  
@@ -126,24 +127,8 @@ def upsert_doctype(
   
     total_records = 0  
     total_vectors = 0  
+    table = f'tab{doctype}'  
   
-    table = f"tab{doctype}"  
-    columns = get_db_columns_for_doctype(doctype)  
-  
-    if "name" in columns:  
-        columns = ["name"] + [c for c in columns if c != "name"]  
-  
-    # Build filters - actually use the 'since' parameter  
-    filters = {"docstatus": ("<", 2)}  
-    if since:  
-        filters["modified"] = (">=", since)  
-  
-    rows = frappe.get_all(  
-        doctype,  
-        fields=columns,  
-        filters=filters,  # Now uses the since parameter  
-    )
-
     buffer_texts, buffer_ids, buffer_meta = [], [], []
 
     def flush():
@@ -165,51 +150,73 @@ def upsert_doctype(
         buffer_ids.clear()
         buffer_meta.clear()
 
-    group: List[Dict[str, Any]] = []
+    try:
+        # Build the raw SQL to ensure docstatus and modified filters work correctly
+        query = f'SELECT * FROM "{table}" WHERE docstatus < 2'
+        params = []
+        if since:
+            query += ' AND modified >= %s'
+            params.append(since)
+            
+        # Use the central utility
+        rows = execute_remote_query(query, tuple(params))
+        
+        group: List[Dict[str, Any]] = []
 
-    for row in rows:
-        total_records += 1
-        group.append(row)
+        for row in rows:
+            total_records += 1
+            group.append(row)
 
-        if len(group) >= group_records:
+            if len(group) >= group_records:
+                record_ids = [str(r["name"]) for r in group]
+                text = "\n\n---\n\n".join(_record_to_text(doctype, r) for r in group)
+
+                meta = {
+                    "doctype": doctype,
+                    "record_ids": record_ids,
+                    "count": len(group),
+                    "text": text,
+                }
+
+                # Ensure ID is strictly ASCII for Pinecone
+                raw_id = f"{doctype}:{record_ids[0]}"
+                safe_id = raw_id.encode("ascii", "ignore").decode("ascii")
+
+                buffer_texts.append(text)
+                buffer_ids.append(safe_id)
+                buffer_meta.append(meta)
+                group = []
+
+                if len(buffer_texts) >= embed_batch:
+                    flush()
+
+        if group:
             record_ids = [str(r["name"]) for r in group]
             text = "\n\n---\n\n".join(_record_to_text(doctype, r) for r in group)
-
-            meta = {
+            
+            # Ensure ID is strictly ASCII for Pinecone
+            raw_id = f"{doctype}:{record_ids[0]}"
+            safe_id = raw_id.encode("ascii", "ignore").decode("ascii")
+            
+            buffer_texts.append(text)
+            buffer_ids.append(safe_id)
+            buffer_meta.append({
                 "doctype": doctype,
                 "record_ids": record_ids,
                 "count": len(group),
                 "text": text,
-            }
+            })
 
-            buffer_texts.append(text)
-            buffer_ids.append(f"{doctype}:{record_ids[0]}")
-            buffer_meta.append(meta)
-            group = []
-
-            if len(buffer_texts) >= embed_batch:
-                flush()
-
-    if group:
-        record_ids = [str(r["name"]) for r in group]
-        text = "\n\n---\n\n".join(_record_to_text(doctype, r) for r in group)
-        buffer_texts.append(text)
-        buffer_ids.append(f"{doctype}:{record_ids[0]}")
-        buffer_meta.append({
-            "doctype": doctype,
-            "record_ids": record_ids,
-            "count": len(group),
-            "text": text,
-        })
-
-    flush()
+        flush()
+        
+    except Exception as e:
+        print(f"Error fetching remote data for {doctype}: {e}")
 
     return {
         "doctype": doctype,
         "records_seen": total_records,
         "vectors_upserted": total_vectors,
     }
-
 
 def upsert_all(
     doctypes: Optional[List[str]] = None,
@@ -319,12 +326,38 @@ def search_auto_namespaces(
 # Bench CLIs
 # -------------------------------------------------------------------
 
-def cli_upsert_all():
-    """
-    bench execute tap_ai.services.pinecone_store.cli_upsert_all
-    """
-    out = upsert_all()
-    print(frappe.as_json(out, indent=2))
+def cli_upsert_all(
+    doctypes: Optional[List[str]] = None,
+    since: Optional[str] = None,
+) -> Dict[str, Any]:
+    
+    '''bench execute tap_ai.services.pinecone_store.cli_upsert_all'''
+
+    if doctypes is None:
+        schema = load_schema()
+        doctypes = [t.replace("tab", "") for t in schema.get("allowlist", [])]
+
+    total = len(doctypes)
+    out = {}
+
+    print(f"\n🚀 Starting upsert for {total} DocTypes...\n", flush=True)
+
+    for i, dt in enumerate(doctypes, 1):
+        print(f"[{i}/{total}] ⏳ Processing: {dt} ...", end="", flush=True)
+        try:
+            result = upsert_doctype(dt, since=since)
+            out[dt] = result
+            print(
+                f"\r[{i}/{total}] ✅ {dt:<30} "
+                f"records={result['records_seen']}, vectors={result['vectors_upserted']}",
+                flush=True,
+            )
+        except Exception as e:
+            out[dt] = {"error": str(e)}
+            print(f"\r[{i}/{total}] ❌ {dt:<30} ERROR: {e}", flush=True)
+            frappe.log_error(f"Upsert failed for {dt}", str(e))
+
+    print(f"\n✅ Done. Processed {total} DocTypes.\n", flush=True)
     return out
 
 def cli_search_auto(q: str, k: int = 8, route_top_n: int = 4):
