@@ -29,7 +29,7 @@ def _pc() -> Pinecone:
 
 def _index():
     pc = _pc()
-    name = get_config("pinecone_index") or "tap-lms-byo"
+    name = get_config("pinecone_index") or "tap-ai-byo"
     return pc.Index(name)
 
 def _emb() -> OpenAIEmbeddings:
