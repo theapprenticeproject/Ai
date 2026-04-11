@@ -1,5 +1,3 @@
-# tap_ai/api/query.py
-
 import frappe
 import json
 import uuid
