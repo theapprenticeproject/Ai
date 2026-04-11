@@ -139,10 +139,12 @@ def _build_context_from_hits(
 
         try:
             fields = get_db_columns_for_doctype(doctype)
-            rows = frappe.get_all(
+            # Use remote database instead of local frappe.get_all
+            from tap_ai.utils.remote_db import get_remote_all
+            rows = get_remote_all(
                 doctype,
-                filters={"name": ("in", record_ids)},
                 fields=fields,
+                filters={"name": ["in", record_ids]},
             )
 
             for row in rows:

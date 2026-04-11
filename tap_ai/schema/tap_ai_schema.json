@@ -1,31 +1,35 @@
 {
   "aliases": {
-    "assessmentlist_id": [
-      "tabAssessmentList",
-      "name"
-    ],
-    "assignment learning objective_id": [
-      "tabAssignment Learning Objective",
-      "name"
-    ],
     "assignment_id": [
       "tabAssignment",
       "name"
     ],
-    "assignmenttranslation_id": [
-      "tabAssignmentTranslation",
+    "assignment_name": [
+      "tabAssignment",
+      "subject"
+    ],
+    "batch_id": [
+      "tabBatch",
+      "name"
+    ],
+    "batch_name": [
+      "tabBatch",
+      "title"
+    ],
+    "city_id": [
+      "tabCity",
+      "name"
+    ],
+    "city_name": [
+      "tabCity",
+      "city_name"
+    ],
+    "collaborativegroup_id": [
+      "tabCollaborativeGroup",
       "name"
     ],
     "competency_id": [
       "tabCompetency",
-      "name"
-    ],
-    "competencylist_id": [
-      "tabCompetencyList",
-      "name"
-    ],
-    "contentattachment_id": [
-      "tabContentAttachment",
       "name"
     ],
     "course level_id": [
@@ -44,106 +48,152 @@
       "tabCourse Verticals",
       "name1"
     ],
+    "course_id": [
+      "tabCourse",
+      "name"
+    ],
+    "course_name": [
+      "tabCourse",
+      "name1"
+    ],
     "courseproject_id": [
       "tabCourseProject",
       "name"
     ],
-    "file type restriction_id": [
-      "tabFile Type Restriction",
+    "district_id": [
+      "tabDistrict",
+      "name"
+    ],
+    "district_name": [
+      "tabDistrict",
+      "district_name"
+    ],
+    "imgsubmission_id": [
+      "tabImgSubmission",
       "name"
     ],
     "learning objective_id": [
       "tabLearning Objective",
       "name"
     ],
-    "learningunit_id": [
-      "tabLearningUnit",
+    "learning objective_name": [
+      "tabLearning Objective",
+      "subject"
+    ],
+    "learningchoicepoint_id": [
+      "tabLearningChoicePoint",
       "name"
     ],
-    "learningunitlist_id": [
-      "tabLearningUnitList",
+    "learningstage_id": [
+      "tabLearningStage",
+      "name"
+    ],
+    "learningstate_id": [
+      "tabLearningState",
+      "name"
+    ],
+    "learningunit_id": [
+      "tabLearningUnit",
       "name"
     ],
     "notecontent_id": [
       "tabNoteContent",
       "name"
     ],
-    "notetranslation_id": [
-      "tabNoteTranslation",
+    "performance_id": [
+      "tabPerformance",
       "name"
     ],
-    "projecttranslation_id": [
-      "tabProjectTranslation",
+    "plagiarism result_id": [
+      "tabPlagiarism Result",
+      "name"
+    ],
+    "projectchallenge_id": [
+      "tabProjectChallenge",
       "name"
     ],
     "quiz_id": [
       "tabQuiz",
       "name"
     ],
+    "quiz_name": [
+      "tabQuiz",
+      "quiz_name"
+    ],
     "quizoption_id": [
       "tabQuizOption",
-      "name"
-    ],
-    "quizoptionlist_id": [
-      "tabQuizOptionList",
-      "name"
-    ],
-    "quizoptiontranslation_id": [
-      "tabQuizOptionTranslation",
       "name"
     ],
     "quizquestion_id": [
       "tabQuizQuestion",
       "name"
     ],
-    "quizquestionlist_id": [
-      "tabQuizQuestionList",
+    "school udise_id": [
+      "tabSchool UDISE",
       "name"
     ],
-    "quizquestiontranslation_id": [
-      "tabQuizQuestionTranslation",
+    "school_id": [
+      "tabSchool",
       "name"
     ],
-    "related content_id": [
-      "tabRelated Content",
+    "school_name": [
+      "tabSchool",
+      "name1"
+    ],
+    "state_id": [
+      "tabState",
+      "name"
+    ],
+    "state_name": [
+      "tabState",
+      "state_name"
+    ],
+    "student assignment_id": [
+      "tabStudent Assignment",
+      "name"
+    ],
+    "student_id": [
+      "tabStudent",
+      "name"
+    ],
+    "student_name": [
+      "tabStudent",
+      "name1"
+    ],
+    "studentquizattempt_id": [
+      "tabStudentQuizAttempt",
+      "name"
+    ],
+    "studentreflection_id": [
+      "tabStudentReflection",
+      "name"
+    ],
+    "submission_id": [
+      "tabSubmission",
       "name"
     ],
     "tap language_id": [
       "tabTAP Language",
       "name"
     ],
-    "unitcontentitem_id": [
-      "tabUnitContentItem",
+    "teacher_id": [
+      "tabTeacher",
       "name"
     ],
-    "unitlearningobjective_id": [
-      "tabUnitLearningObjective",
+    "unit_id": [
+      "tabUnit",
       "name"
+    ],
+    "unit_name": [
+      "tabUnit",
+      "name1"
     ],
     "videoclass_id": [
       "tabVideoClass",
       "name"
-    ],
-    "videotranslation_id": [
-      "tabVideoTranslation",
-      "name"
     ]
   },
   "allowed_joins": [
-    {
-      "left_key": "name",
-      "left_table": "tabNoteContent",
-      "right_key": "parent",
-      "right_table": "tabNoteTranslation",
-      "why": "NoteContent is the parent for NoteTranslation records (a child table)."
-    },
-    {
-      "left_key": "name",
-      "left_table": "tabNoteContent",
-      "right_key": "parent",
-      "right_table": "tabAssessmentList",
-      "why": "NoteContent is the parent for AssessmentList records (a child table)."
-    },
     {
       "left_key": "subject",
       "left_table": "tabAssignment",
@@ -156,105 +206,56 @@
       "left_table": "tabAssignment",
       "right_key": "parent",
       "right_table": "tabAssignment Learning Objective",
-      "why": "Assignment is the parent for Assignment Learning Objective records (a child table)."
+      "why": "Assignment is parent for Assignment Learning Objective (child table)."
     },
     {
       "left_key": "name",
       "left_table": "tabAssignment",
       "right_key": "parent",
       "right_table": "tabRelated Content",
-      "why": "Assignment is the parent for Related Content records (a child table)."
+      "why": "Assignment is parent for Related Content (child table)."
     },
     {
       "left_key": "name",
       "left_table": "tabAssignment",
       "right_key": "parent",
       "right_table": "tabFile Type Restriction",
-      "why": "Assignment is the parent for File Type Restriction records (a child table)."
+      "why": "Assignment is parent for File Type Restriction (child table)."
     },
     {
       "left_key": "name",
       "left_table": "tabAssignment",
       "right_key": "parent",
       "right_table": "tabAssignmentTranslation",
-      "why": "Assignment is the parent for AssignmentTranslation records (a child table)."
+      "why": "Assignment is parent for AssignmentTranslation (child table)."
+    },
+    {
+      "left_key": "district",
+      "left_table": "tabCity",
+      "right_key": "name",
+      "right_table": "tabDistrict",
+      "why": "City.district links to District.name"
     },
     {
       "left_key": "name",
-      "left_table": "tabQuizQuestion",
+      "left_table": "tabCollaborativeGroup",
       "right_key": "parent",
-      "right_table": "tabQuizOptionList",
-      "why": "QuizQuestion is the parent for QuizOptionList records (a child table)."
+      "right_table": "tabStudentList",
+      "why": "CollaborativeGroup is parent for StudentList (child table)."
     },
     {
       "left_key": "name",
-      "left_table": "tabQuizQuestion",
+      "left_table": "tabCollaborativeGroup",
       "right_key": "parent",
-      "right_table": "tabQuizQuestionTranslation",
-      "why": "QuizQuestion is the parent for QuizQuestionTranslation records (a child table)."
+      "right_table": "tabProjectChallengesList",
+      "why": "CollaborativeGroup is parent for ProjectChallengesList (child table)."
     },
     {
-      "left_key": "quiz_id",
-      "left_table": "tabQuizQuestion",
+      "left_key": "facilitator",
+      "left_table": "tabCollaborativeGroup",
       "right_key": "name",
-      "right_table": "tabQuiz",
-      "why": "QuizQuestion.quiz_id links to Quiz.name"
-    },
-    {
-      "left_key": "language",
-      "left_table": "tabQuizOptionTranslation",
-      "right_key": "name",
-      "right_table": "tabTAP Language",
-      "why": "QuizOptionTranslation.language links to TAP Language.name"
-    },
-    {
-      "left_key": "name",
-      "left_table": "tabVideoClass",
-      "right_key": "parent",
-      "right_table": "tabVideoTranslation",
-      "why": "VideoClass is the parent for VideoTranslation records (a child table)."
-    },
-    {
-      "left_key": "name",
-      "left_table": "tabVideoClass",
-      "right_key": "parent",
-      "right_table": "tabContentAttachment",
-      "why": "VideoClass is the parent for ContentAttachment records (a child table)."
-    },
-    {
-      "left_key": "course_vertical",
-      "left_table": "tabVideoClass",
-      "right_key": "name",
-      "right_table": "tabCourse Verticals",
-      "why": "VideoClass.course_vertical links to Course Verticals.name"
-    },
-    {
-      "left_key": "name",
-      "left_table": "tabVideoClass",
-      "right_key": "parent",
-      "right_table": "tabAssessmentList",
-      "why": "VideoClass is the parent for AssessmentList records (a child table)."
-    },
-    {
-      "left_key": "question",
-      "left_table": "tabQuizQuestionList",
-      "right_key": "name",
-      "right_table": "tabQuizQuestion",
-      "why": "QuizQuestionList.question links to QuizQuestion.name"
-    },
-    {
-      "left_key": "competency",
-      "left_table": "tabCompetencyList",
-      "right_key": "name",
-      "right_table": "tabCompetency",
-      "why": "CompetencyList.competency links to Competency.name"
-    },
-    {
-      "left_key": "language",
-      "left_table": "tabQuizQuestionTranslation",
-      "right_key": "name",
-      "right_table": "tabTAP Language",
-      "why": "QuizQuestionTranslation.language links to TAP Language.name"
+      "right_table": "tabTeacher",
+      "why": "CollaborativeGroup.facilitator links to Teacher.name"
     },
     {
       "left_key": "vertical",
@@ -274,36 +275,29 @@
       "left_key": "name",
       "left_table": "tabCourse Level",
       "right_key": "parent",
-      "right_table": "tabUnitLearningObjective",
-      "why": "Course Level is the parent for UnitLearningObjective records (a child table)."
+      "right_table": "tabLearningUnitList",
+      "why": "Course Level is parent for LearningUnitList (child table)."
     },
     {
       "left_key": "name",
       "left_table": "tabCourse Level",
       "right_key": "parent",
-      "right_table": "tabLearningUnitList",
-      "why": "Course Level is the parent for LearningUnitList records (a child table)."
+      "right_table": "tabUnitLearningObjective",
+      "why": "Course Level is parent for UnitLearningObjective (child table)."
     },
     {
-      "left_key": "language",
-      "left_table": "tabNoteTranslation",
+      "left_key": "project_translations",
+      "left_table": "tabCourseProject",
       "right_key": "name",
-      "right_table": "tabTAP Language",
-      "why": "NoteTranslation.language links to TAP Language.name"
+      "right_table": "tabProjectTranslation",
+      "why": "CourseProject.project_translations links to ProjectTranslation.name"
     },
     {
-      "left_key": "language",
-      "left_table": "tabAssignmentTranslation",
+      "left_key": "state",
+      "left_table": "tabDistrict",
       "right_key": "name",
-      "right_table": "tabTAP Language",
-      "why": "AssignmentTranslation.language links to TAP Language.name"
-    },
-    {
-      "left_key": "language",
-      "left_table": "tabVideoTranslation",
-      "right_key": "name",
-      "right_table": "tabTAP Language",
-      "why": "VideoTranslation.language links to TAP Language.name"
+      "right_table": "tabState",
+      "why": "District.state links to State.name"
     },
     {
       "left_key": "subject",
@@ -320,67 +314,46 @@
       "why": "Learning Objective.prerequisites links to Learning Objective.name"
     },
     {
-      "left_key": "project_translations",
-      "left_table": "tabCourseProject",
+      "left_key": "student",
+      "left_table": "tabLearningChoicePoint",
       "right_key": "name",
-      "right_table": "tabProjectTranslation",
-      "why": "CourseProject.project_translations links to ProjectTranslation.name"
+      "right_table": "tabStudent",
+      "why": "LearningChoicePoint.student links to Student.name"
     },
     {
-      "left_key": "learning_objective",
-      "left_table": "tabAssignment Learning Objective",
+      "left_key": "course_level",
+      "left_table": "tabLearningStage",
       "right_key": "name",
-      "right_table": "tabLearning Objective",
-      "why": "Assignment Learning Objective.learning_objective links to Learning Objective.name"
+      "right_table": "tabCourse Level",
+      "why": "LearningStage.course_level links to Course Level.name"
     },
     {
       "left_key": "name",
-      "left_table": "tabQuizOption",
+      "left_table": "tabLearningStage",
       "right_key": "parent",
-      "right_table": "tabQuizOptionTranslation",
-      "why": "QuizOption is the parent for QuizOptionTranslation records (a child table)."
+      "right_table": "tabStageFlow",
+      "why": "LearningStage is parent for StageFlow (child table)."
     },
     {
-      "left_key": "question_id",
-      "left_table": "tabQuizOption",
+      "left_key": "student",
+      "left_table": "tabLearningState",
       "right_key": "name",
-      "right_table": "tabQuizQuestion",
-      "why": "QuizOption.question_id links to QuizQuestion.name"
-    },
-    {
-      "left_key": "language",
-      "left_table": "tabProjectTranslation",
-      "right_key": "name",
-      "right_table": "tabTAP Language",
-      "why": "ProjectTranslation.language links to TAP Language.name"
-    },
-    {
-      "left_key": "learning_objectives",
-      "left_table": "tabUnitLearningObjective",
-      "right_key": "name",
-      "right_table": "tabLearning Objective",
-      "why": "UnitLearningObjective.learning_objectives links to Learning Objective.name"
-    },
-    {
-      "left_key": "options",
-      "left_table": "tabQuizOptionList",
-      "right_key": "name",
-      "right_table": "tabQuizOption",
-      "why": "QuizOptionList.options links to QuizOption.name"
+      "right_table": "tabStudent",
+      "why": "LearningState.student links to Student.name"
     },
     {
       "left_key": "name",
+      "left_table": "tabLearningState",
+      "right_key": "parent",
+      "right_table": "tabStudentSelfAssessment",
+      "why": "LearningState is parent for StudentSelfAssessment (child table)."
+    },
+    {
+      "left_key": "course_vertical",
       "left_table": "tabLearningUnit",
-      "right_key": "parent",
-      "right_table": "tabCompetencyList",
-      "why": "LearningUnit is the parent for CompetencyList records (a child table)."
-    },
-    {
-      "left_key": "name",
-      "left_table": "tabLearningUnit",
-      "right_key": "parent",
-      "right_table": "tabUnitLearningObjective",
-      "why": "LearningUnit is the parent for UnitLearningObjective records (a child table)."
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "LearningUnit.course_vertical links to Course Verticals.name"
     },
     {
       "left_key": "parent_unit",
@@ -394,82 +367,439 @@
       "left_table": "tabLearningUnit",
       "right_key": "parent",
       "right_table": "tabUnitContentItem",
-      "why": "LearningUnit is the parent for UnitContentItem records (a child table)."
+      "why": "LearningUnit is parent for UnitContentItem (child table)."
     },
     {
-      "left_key": "course_vertical",
+      "left_key": "name",
       "left_table": "tabLearningUnit",
+      "right_key": "parent",
+      "right_table": "tabCompetencyList",
+      "why": "LearningUnit is parent for CompetencyList (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabLearningUnit",
+      "right_key": "parent",
+      "right_table": "tabUnitLearningObjective",
+      "why": "LearningUnit is parent for UnitLearningObjective (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabLearningUnit",
+      "right_key": "parent",
+      "right_table": "tabLearningUnitSDG",
+      "why": "LearningUnit is parent for LearningUnitSDG (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabNoteContent",
+      "right_key": "parent",
+      "right_table": "tabNoteTranslation",
+      "why": "NoteContent is parent for NoteTranslation (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabNoteContent",
+      "right_key": "parent",
+      "right_table": "tabAssessmentList",
+      "why": "NoteContent is parent for AssessmentList (child table)."
+    },
+    {
+      "left_key": "student",
+      "left_table": "tabPerformance",
       "right_key": "name",
-      "right_table": "tabCourse Verticals",
-      "why": "LearningUnit.course_vertical links to Course Verticals.name"
+      "right_table": "tabStudent",
+      "why": "Performance.student links to Student.name"
+    },
+    {
+      "left_key": "enrollment",
+      "left_table": "tabPerformance",
+      "right_key": "name",
+      "right_table": "tabEnrollment",
+      "why": "Performance.enrollment links to Enrollment.name"
+    },
+    {
+      "left_key": "activity",
+      "left_table": "tabPerformance",
+      "right_key": "name",
+      "right_table": "tabActivities",
+      "why": "Performance.activity links to Activities.name"
+    },
+    {
+      "left_key": "submission",
+      "left_table": "tabPlagiarism Result",
+      "right_key": "name",
+      "right_table": "tabSubmission",
+      "why": "Plagiarism Result.submission links to Submission.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabProjectChallenge",
+      "right_key": "parent",
+      "right_table": "tabCourseModuleList",
+      "why": "ProjectChallenge is parent for CourseModuleList (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabProjectChallenge",
+      "right_key": "parent",
+      "right_table": "tabCompetencyList",
+      "why": "ProjectChallenge is parent for CompetencyList (child table)."
     },
     {
       "left_key": "name",
       "left_table": "tabQuiz",
       "right_key": "parent",
       "right_table": "tabQuizQuestionList",
-      "why": "Quiz is the parent for QuizQuestionList records (a child table)."
+      "why": "Quiz is parent for QuizQuestionList (child table)."
     },
     {
-      "left_key": "learning_unit",
-      "left_table": "tabLearningUnitList",
+      "left_key": "question_id",
+      "left_table": "tabQuizOption",
       "right_key": "name",
-      "right_table": "tabLearningUnit",
-      "why": "LearningUnitList.learning_unit links to LearningUnit.name"
+      "right_table": "tabQuizQuestion",
+      "why": "QuizOption.question_id links to QuizQuestion.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuizOption",
+      "right_key": "parent",
+      "right_table": "tabQuizOptionTranslation",
+      "why": "QuizOption is parent for QuizOptionTranslation (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuizQuestion",
+      "right_key": "parent",
+      "right_table": "tabQuizOptionList",
+      "why": "QuizQuestion is parent for QuizOptionList (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabQuizQuestion",
+      "right_key": "parent",
+      "right_table": "tabQuizQuestionTranslation",
+      "why": "QuizQuestion is parent for QuizQuestionTranslation (child table)."
+    },
+    {
+      "left_key": "model",
+      "left_table": "tabSchool",
+      "right_key": "name",
+      "right_table": "tabTap Models",
+      "why": "School.model links to Tap Models.name"
+    },
+    {
+      "left_key": "city",
+      "left_table": "tabSchool",
+      "right_key": "name",
+      "right_table": "tabCity",
+      "why": "School.city links to City.name"
+    },
+    {
+      "left_key": "district",
+      "left_table": "tabSchool",
+      "right_key": "name",
+      "right_table": "tabDistrict",
+      "why": "School.district links to District.name"
+    },
+    {
+      "left_key": "state",
+      "left_table": "tabSchool",
+      "right_key": "name",
+      "right_table": "tabState",
+      "why": "School.state links to State.name"
+    },
+    {
+      "left_key": "country",
+      "left_table": "tabSchool",
+      "right_key": "name",
+      "right_table": "tabCountry",
+      "why": "School.country links to Country.name"
+    },
+    {
+      "left_key": "tap_poc",
+      "left_table": "tabSchool",
+      "right_key": "name",
+      "right_table": "tabUser",
+      "why": "School.tap_poc links to User.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabSchool",
+      "right_key": "parent",
+      "right_table": "tabSchool_POC",
+      "why": "School is parent for School_POC (child table)."
+    },
+    {
+      "left_key": "school",
+      "left_table": "tabSchool UDISE",
+      "right_key": "name",
+      "right_table": "tabSchool",
+      "why": "School UDISE.school links to School.name"
+    },
+    {
+      "left_key": "country",
+      "left_table": "tabState",
+      "right_key": "name",
+      "right_table": "tabCountry",
+      "why": "State.country links to Country.name"
+    },
+    {
+      "left_key": "school_id",
+      "left_table": "tabStudent",
+      "right_key": "name",
+      "right_table": "tabSchool",
+      "why": "Student.school_id links to School.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabStudent",
+      "right_key": "parent",
+      "right_table": "tabEnrollment",
+      "why": "Student is parent for Enrollment (child table)."
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabStudent",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "Student.language links to TAP Language.name"
+    },
+    {
+      "left_key": "backend_onboarding",
+      "left_table": "tabStudent",
+      "right_key": "name",
+      "right_table": "tabBackend Student Onboarding",
+      "why": "Student.backend_onboarding links to Backend Student Onboarding.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabStudent",
+      "right_key": "parent",
+      "right_table": "tabStudentPeerGroup",
+      "why": "Student is parent for StudentPeerGroup (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabStudent",
+      "right_key": "parent",
+      "right_table": "tabStudentMentorRole",
+      "why": "Student is parent for StudentMentorRole (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabStudent",
+      "right_key": "parent",
+      "right_table": "tabStudentMenteeRole",
+      "why": "Student is parent for StudentMenteeRole (child table)."
+    },
+    {
+      "left_key": "student",
+      "left_table": "tabStudent Assignment",
+      "right_key": "name",
+      "right_table": "tabStudent",
+      "why": "Student Assignment.student links to Student.name"
+    },
+    {
+      "left_key": "assignment",
+      "left_table": "tabStudent Assignment",
+      "right_key": "name",
+      "right_table": "tabAssignment",
+      "why": "Student Assignment.assignment links to Assignment.name"
+    },
+    {
+      "left_key": "submission",
+      "left_table": "tabStudent Assignment",
+      "right_key": "name",
+      "right_table": "tabSubmission",
+      "why": "Student Assignment.submission links to Submission.name"
+    },
+    {
+      "left_key": "feedback_request_id",
+      "left_table": "tabStudent Assignment",
+      "right_key": "name",
+      "right_table": "tabFeedback Request",
+      "why": "Student Assignment.feedback_request_id links to Feedback Request.name"
+    },
+    {
+      "left_key": "student",
+      "left_table": "tabStudentQuizAttempt",
+      "right_key": "name",
+      "right_table": "tabStudent",
+      "why": "StudentQuizAttempt.student links to Student.name"
+    },
+    {
+      "left_key": "course_level",
+      "left_table": "tabStudentQuizAttempt",
+      "right_key": "name",
+      "right_table": "tabCourse Level",
+      "why": "StudentQuizAttempt.course_level links to Course Level.name"
+    },
+    {
+      "left_key": "student_progress",
+      "left_table": "tabStudentQuizAttempt",
+      "right_key": "name",
+      "right_table": "tabStudentStageProgress",
+      "why": "StudentQuizAttempt.student_progress links to StudentStageProgress.name"
+    },
+    {
+      "left_key": "quiz",
+      "left_table": "tabStudentQuizAttempt",
+      "right_key": "name",
+      "right_table": "tabQuiz",
+      "why": "StudentQuizAttempt.quiz links to Quiz.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabStudentQuizAttempt",
+      "right_key": "parent",
+      "right_table": "tabStudentQuizAnswer",
+      "why": "StudentQuizAttempt is parent for StudentQuizAnswer (child table)."
+    },
+    {
+      "left_key": "student",
+      "left_table": "tabStudentReflection",
+      "right_key": "name",
+      "right_table": "tabStudent",
+      "why": "StudentReflection.student links to Student.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabStudentReflection",
+      "right_key": "parent",
+      "right_table": "tabCompetencyList",
+      "why": "StudentReflection is parent for CompetencyList (child table)."
+    },
+    {
+      "left_key": "student_assignment",
+      "left_table": "tabSubmission",
+      "right_key": "name",
+      "right_table": "tabStudent Assignment",
+      "why": "Submission.student_assignment links to Student Assignment.name"
+    },
+    {
+      "left_key": "plagiarism_result",
+      "left_table": "tabSubmission",
+      "right_key": "name",
+      "right_table": "tabPlagiarism Result",
+      "why": "Submission.plagiarism_result links to Plagiarism Result.name"
+    },
+    {
+      "left_key": "school_id",
+      "left_table": "tabTeacher",
+      "right_key": "name",
+      "right_table": "tabSchool",
+      "why": "Teacher.school_id links to School.name"
+    },
+    {
+      "left_key": "teacher_batch",
+      "left_table": "tabTeacher",
+      "right_key": "name",
+      "right_table": "tabBatch",
+      "why": "Teacher.teacher_batch links to Batch.name"
+    },
+    {
+      "left_key": "language",
+      "left_table": "tabTeacher",
+      "right_key": "name",
+      "right_table": "tabTAP Language",
+      "why": "Teacher.language links to TAP Language.name"
+    },
+    {
+      "left_key": "course_level",
+      "left_table": "tabTeacher",
+      "right_key": "name",
+      "right_table": "tabCourse Level",
+      "why": "Teacher.course_level links to Course Level.name"
+    },
+    {
+      "left_key": "course",
+      "left_table": "tabUnit",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "Unit.course links to Course Verticals.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabUnit",
+      "right_key": "parent",
+      "right_table": "tabActivities",
+      "why": "Unit is parent for Activities (child table)."
+    },
+    {
+      "left_key": "course_vertical",
+      "left_table": "tabVideoClass",
+      "right_key": "name",
+      "right_table": "tabCourse Verticals",
+      "why": "VideoClass.course_vertical links to Course Verticals.name"
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabVideoClass",
+      "right_key": "parent",
+      "right_table": "tabVideoTranslation",
+      "why": "VideoClass is parent for VideoTranslation (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabVideoClass",
+      "right_key": "parent",
+      "right_table": "tabContentAttachment",
+      "why": "VideoClass is parent for ContentAttachment (child table)."
+    },
+    {
+      "left_key": "name",
+      "left_table": "tabVideoClass",
+      "right_key": "parent",
+      "right_table": "tabAssessmentList",
+      "why": "VideoClass is parent for AssessmentList (child table)."
     }
   ],
   "allowlist": [
-    "tabAssessmentList",
     "tabAssignment",
-    "tabAssignment Learning Objective",
-    "tabAssignmentTranslation",
+    "tabBatch",
+    "tabCity",
+    "tabCollaborativeGroup",
     "tabCompetency",
-    "tabCompetencyList",
-    "tabContentAttachment",
+    "tabCourse",
     "tabCourse Level",
     "tabCourse Verticals",
     "tabCourseProject",
-    "tabFile Type Restriction",
+    "tabDistrict",
+    "tabImgSubmission",
     "tabLearning Objective",
+    "tabLearningChoicePoint",
+    "tabLearningStage",
+    "tabLearningState",
     "tabLearningUnit",
-    "tabLearningUnitList",
     "tabNoteContent",
-    "tabNoteTranslation",
-    "tabProjectTranslation",
+    "tabPerformance",
+    "tabPlagiarism Result",
+    "tabProjectChallenge",
     "tabQuiz",
     "tabQuizOption",
-    "tabQuizOptionList",
-    "tabQuizOptionTranslation",
     "tabQuizQuestion",
-    "tabQuizQuestionList",
-    "tabQuizQuestionTranslation",
-    "tabRelated Content",
+    "tabSchool",
+    "tabSchool UDISE",
+    "tabState",
+    "tabStudent",
+    "tabStudent Assignment",
+    "tabStudentQuizAttempt",
+    "tabStudentReflection",
+    "tabSubmission",
     "tabTAP Language",
-    "tabUnitContentItem",
-    "tabUnitLearningObjective",
-    "tabVideoClass",
-    "tabVideoTranslation"
+    "tabTeacher",
+    "tabUnit",
+    "tabVideoClass"
   ],
   "guardrails": [
-    "Use ONLY tables listed in the 'allowlist'.",
-    "Use ONLY joins defined in the 'allowed_joins'.",
-    "The Primary Key (PK) for all tables is the 'name' column.",
-    "When displaying a record's name to a user, prefer using its 'display_field' column if available.",
-    "Always include a LIMIT clause (e.g., LIMIT 20) in queries that might return many rows."
+    "Use ONLY tables in 'allowlist'.",
+    "Use ONLY joins in 'allowed_joins'.",
+    "Primary Key is always 'name'.",
+    "Prefer 'display_field' when showing records.",
+    "Always include LIMIT in queries."
   ],
-  "safe_views": {},
   "tables": {
-    "tabAssessmentList": {
-      "columns": [
-        "assessment",
-        "assessment_type",
-        "name"
-      ],
-      "description": "Assessmentlist records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "AssessmentList",
-      "pk": "name"
-    },
     "tabAssignment": {
       "columns": [
         "assignment_name",
@@ -485,39 +815,59 @@
         "max_file_size",
         "max_score",
         "name",
-        "rag_settings_section",
         "reference_image",
-        "reference_material_section",
         "related_content",
         "subject",
         "submission_guidelines"
       ],
-      "description": "Assignment records. Key columns: name (Primary Key).",
-      "display_field": null,
+      "description": "Assignment records. Key field: subject.",
+      "display_field": "subject",
       "doctype": "Assignment",
       "pk": "name"
     },
-    "tabAssignment Learning Objective": {
+    "tabBatch": {
       "columns": [
-        "learning_objective",
-        "name"
+        "active",
+        "batch_id",
+        "end_date",
+        "engagement_end_dae",
+        "name",
+        "name1",
+        "regist_end_date",
+        "regular_activity_start_date",
+        "start_date",
+        "title"
       ],
-      "description": "Assignment Learning Objective records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "Assignment Learning Objective",
+      "description": "Batch records. Key field: title.",
+      "display_field": "title",
+      "doctype": "Batch",
       "pk": "name"
     },
-    "tabAssignmentTranslation": {
+    "tabCity": {
       "columns": [
-        "language",
-        "name",
-        "translated_description",
-        "translated_guidelines",
-        "translated_title"
+        "city_name",
+        "district",
+        "name"
       ],
-      "description": "Assignmenttranslation records. Key columns: name (Primary Key).",
+      "description": "City records. Key field: city_name.",
+      "display_field": "city_name",
+      "doctype": "City",
+      "pk": "name"
+    },
+    "tabCollaborativeGroup": {
+      "columns": [
+        "communication_channel",
+        "current_projects",
+        "facilitator",
+        "formation_date",
+        "group_name",
+        "members",
+        "name",
+        "purpose"
+      ],
+      "description": "Collaborativegroup records.",
       "display_field": null,
-      "doctype": "AssignmentTranslation",
+      "doctype": "CollaborativeGroup",
       "pk": "name"
     },
     "tabCompetency": {
@@ -531,30 +881,20 @@
         "name",
         "related_competencies"
       ],
-      "description": "Competency records. Key columns: name (Primary Key).",
+      "description": "Competency records.",
       "display_field": null,
       "doctype": "Competency",
       "pk": "name"
     },
-    "tabCompetencyList": {
+    "tabCourse": {
       "columns": [
-        "competency",
-        "name"
+        "name",
+        "name1",
+        "name2"
       ],
-      "description": "Competencylist records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "CompetencyList",
-      "pk": "name"
-    },
-    "tabContentAttachment": {
-      "columns": [
-        "file",
-        "file_name",
-        "name"
-      ],
-      "description": "Contentattachment records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "ContentAttachment",
+      "description": "Course records. Key field: name1.",
+      "display_field": "name1",
+      "doctype": "Course",
       "pk": "name"
     },
     "tabCourse Level": {
@@ -572,7 +912,7 @@
         "stage",
         "vertical"
       ],
-      "description": "Course Level records. Key columns: name (Primary Key), name1 (display name).",
+      "description": "Course Level records. Key field: name1.",
       "display_field": "name1",
       "doctype": "Course Level",
       "pk": "name"
@@ -584,7 +924,7 @@
         "name2",
         "vertical_id"
       ],
-      "description": "Course Verticals records. Key columns: name (Primary Key), name1 (display name).",
+      "description": "Course Verticals records. Key field: name1.",
       "display_field": "name1",
       "doctype": "Course Verticals",
       "pk": "name"
@@ -598,19 +938,41 @@
         "project_translations",
         "submission_type"
       ],
-      "description": "Courseproject records. Key columns: name (Primary Key).",
+      "description": "Courseproject records.",
       "display_field": null,
       "doctype": "CourseProject",
       "pk": "name"
     },
-    "tabFile Type Restriction": {
+    "tabDistrict": {
       "columns": [
-        "file_type",
-        "name"
+        "district_name",
+        "name",
+        "state"
       ],
-      "description": "File Type Restriction records. Key columns: name (Primary Key).",
+      "description": "District records. Key field: district_name.",
+      "display_field": "district_name",
+      "doctype": "District",
+      "pk": "name"
+    },
+    "tabImgSubmission": {
+      "columns": [
+        "assign_id",
+        "completed_at",
+        "created_at",
+        "feedback_summary",
+        "generated_feedback",
+        "grade",
+        "img_url",
+        "name",
+        "overall_feedback",
+        "plagiarism_result",
+        "similar_sources",
+        "status",
+        "student_id"
+      ],
+      "description": "Imgsubmission records.",
       "display_field": null,
-      "doctype": "File Type Restriction",
+      "doctype": "ImgSubmission",
       "pk": "name"
     },
     "tabLearning Objective": {
@@ -623,13 +985,71 @@
         "prerequisites",
         "subject"
       ],
-      "description": "Learning Objective records. Key columns: name (Primary Key).",
-      "display_field": null,
+      "description": "Learning Objective records. Key field: subject.",
+      "display_field": "subject",
       "doctype": "Learning Objective",
+      "pk": "name"
+    },
+    "tabLearningChoicePoint": {
+      "columns": [
+        "choice_timestamp",
+        "choice_type",
+        "impact_on_path",
+        "name",
+        "options_presented",
+        "student",
+        "student_selection"
+      ],
+      "description": "Learningchoicepoint records.",
+      "display_field": null,
+      "doctype": "LearningChoicePoint",
+      "pk": "name"
+    },
+    "tabLearningStage": {
+      "columns": [
+        "course_level",
+        "description",
+        "is_active",
+        "is_final",
+        "is_initial",
+        "linked_content",
+        "name",
+        "order",
+        "required_for_completion",
+        "stage_flows",
+        "stage_name",
+        "stage_type"
+      ],
+      "description": "Learningstage records.",
+      "display_field": null,
+      "doctype": "LearningStage",
+      "pk": "name"
+    },
+    "tabLearningState": {
+      "columns": [
+        "cognitive_load_indicator",
+        "competency_development",
+        "evidence_portfolio",
+        "growth_areas",
+        "knowledge_map",
+        "last_assessment_date",
+        "last_updated",
+        "learning_style_preferences",
+        "name",
+        "recent_knowledge_gain_rate",
+        "self_assessment_history",
+        "skill_proficiencies",
+        "strengths",
+        "student"
+      ],
+      "description": "Learningstate records.",
+      "display_field": null,
+      "doctype": "LearningState",
       "pk": "name"
     },
     "tabLearningUnit": {
       "columns": [
+        "activity_type",
         "certificate_on_completion",
         "competencies_addressed",
         "completion_criteria",
@@ -643,24 +1063,14 @@
         "order",
         "parent_unit",
         "real_world_connection",
+        "sdg_alignment",
         "status",
         "unit_name",
         "unit_type"
       ],
-      "description": "Learningunit records. Key columns: name (Primary Key).",
+      "description": "Learningunit records.",
       "display_field": null,
       "doctype": "LearningUnit",
-      "pk": "name"
-    },
-    "tabLearningUnitList": {
-      "columns": [
-        "learning_unit",
-        "name",
-        "week_no"
-      ],
-      "description": "Learningunitlist records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "LearningUnitList",
       "pk": "name"
     },
     "tabNoteContent": {
@@ -675,35 +1085,55 @@
         "note_type",
         "translated_content"
       ],
-      "description": "Notecontent records. Key columns: name (Primary Key).",
+      "description": "Notecontent records.",
       "display_field": null,
       "doctype": "NoteContent",
       "pk": "name"
     },
-    "tabNoteTranslation": {
+    "tabPerformance": {
       "columns": [
-        "language",
+        "accessed_",
+        "activity",
+        "enrollment",
         "name",
-        "translated_attachments",
-        "translated_content",
-        "translated_name",
-        "translation_status"
+        "sent_",
+        "student",
+        "submitted_"
       ],
-      "description": "Notetranslation records. Key columns: name (Primary Key).",
+      "description": "Performance records.",
       "display_field": null,
-      "doctype": "NoteTranslation",
+      "doctype": "Performance",
       "pk": "name"
     },
-    "tabProjectTranslation": {
+    "tabPlagiarism Result": {
       "columns": [
-        "language",
+        "checked_at",
         "name",
-        "translated_description",
-        "translated_title"
+        "plagiarism_score",
+        "similar_sources",
+        "status",
+        "submission"
       ],
-      "description": "Projecttranslation records. Key columns: name (Primary Key).",
+      "description": "Plagiarism Result records.",
       "display_field": null,
-      "doctype": "ProjectTranslation",
+      "doctype": "Plagiarism Result",
+      "pk": "name"
+    },
+    "tabProjectChallenge": {
+      "columns": [
+        "collaboration_type",
+        "community_connection",
+        "competencies_developed",
+        "content_delivery_format",
+        "description",
+        "name",
+        "pro_name",
+        "related_modules",
+        "required_resources"
+      ],
+      "description": "Projectchallenge records.",
+      "display_field": null,
+      "doctype": "ProjectChallenge",
       "pk": "name"
     },
     "tabQuiz": {
@@ -720,8 +1150,8 @@
         "time_limit",
         "total_questions"
       ],
-      "description": "Quiz records. Key columns: name (Primary Key).",
-      "display_field": null,
+      "description": "Quiz records. Key field: quiz_name.",
+      "display_field": "quiz_name",
       "doctype": "Quiz",
       "pk": "name"
     },
@@ -733,31 +1163,9 @@
         "option_translations",
         "question_id"
       ],
-      "description": "Quizoption records. Key columns: name (Primary Key).",
+      "description": "Quizoption records.",
       "display_field": null,
       "doctype": "QuizOption",
-      "pk": "name"
-    },
-    "tabQuizOptionList": {
-      "columns": [
-        "name",
-        "options",
-        "order_number"
-      ],
-      "description": "Quizoptionlist records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "QuizOptionList",
-      "pk": "name"
-    },
-    "tabQuizOptionTranslation": {
-      "columns": [
-        "language",
-        "name",
-        "translated_option"
-      ],
-      "description": "Quizoptiontranslation records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "QuizOptionTranslation",
       "pk": "name"
     },
     "tabQuizQuestion": {
@@ -768,49 +1176,183 @@
         "name",
         "options",
         "points",
+        "question",
         "question_name",
         "question_translations",
-        "question_type",
-        "quiz_id"
+        "question_type"
       ],
-      "description": "Quizquestion records. Key columns: name (Primary Key).",
+      "description": "Quizquestion records.",
       "display_field": null,
       "doctype": "QuizQuestion",
       "pk": "name"
     },
-    "tabQuizQuestionList": {
+    "tabSchool": {
       "columns": [
+        "address",
+        "board",
+        "city",
+        "country",
+        "department",
+        "district",
+        "headmaster_name",
+        "headmaster_phone",
+        "hm_follow_up_frequency",
+        "is_akanksha",
+        "is_tfi",
+        "keyword",
+        "model",
         "name",
-        "question",
-        "question_number"
+        "name1",
+        "pin",
+        "poc",
+        "school_follow_up_frequency",
+        "state",
+        "status",
+        "tap_poc",
+        "type",
+        "year"
       ],
-      "description": "Quizquestionlist records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "QuizQuestionList",
+      "description": "School records. Key field: name1.",
+      "display_field": "name1",
+      "doctype": "School",
       "pk": "name"
     },
-    "tabQuizQuestionTranslation": {
+    "tabSchool UDISE": {
       "columns": [
+        "description",
+        "name",
+        "school",
+        "udise"
+      ],
+      "description": "School Udise records.",
+      "display_field": null,
+      "doctype": "School UDISE",
+      "pk": "name"
+    },
+    "tabState": {
+      "columns": [
+        "country",
+        "name",
+        "state_name"
+      ],
+      "description": "State records. Key field: state_name.",
+      "display_field": "state_name",
+      "doctype": "State",
+      "pk": "name"
+    },
+    "tabStudent": {
+      "columns": [
+        "access_rate",
+        "alt_phone",
+        "backend_onboarding",
+        "enrollment",
+        "gender",
+        "glific_id",
+        "grade",
+        "joined_on",
         "language",
+        "level",
+        "mentee_role",
+        "mentor_role",
         "name",
-        "translated_explanation",
-        "translated_hint",
-        "translated_question"
+        "name1",
+        "peer_groups",
+        "phone",
+        "preferred_day",
+        "preferred_time",
+        "profile_id",
+        "rigour",
+        "school_id",
+        "section",
+        "shared_users",
+        "status",
+        "submission_rate",
+        "swiftchat_id"
       ],
-      "description": "Quizquestiontranslation records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "QuizQuestionTranslation",
+      "description": "Student records. Key field: name1.",
+      "display_field": "name1",
+      "doctype": "Student",
       "pk": "name"
     },
-    "tabRelated Content": {
+    "tabStudent Assignment": {
       "columns": [
-        "content",
-        "content_type",
-        "name"
+        "assignment",
+        "due_date",
+        "feedback_request_id",
+        "feedback_status",
+        "name",
+        "plagiarism_check_status",
+        "plagiarism_score",
+        "student",
+        "submission",
+        "submission_status"
       ],
-      "description": "Related Content records. Key columns: name (Primary Key).",
+      "description": "Student Assignment records.",
       "display_field": null,
-      "doctype": "Related Content",
+      "doctype": "Student Assignment",
+      "pk": "name"
+    },
+    "tabStudentQuizAttempt": {
+      "columns": [
+        "answers",
+        "attempt_number",
+        "completed_at",
+        "correct_answers",
+        "course_level",
+        "current_question_index",
+        "name",
+        "passed",
+        "passing_score",
+        "question_started_at",
+        "quiz",
+        "quizname",
+        "score",
+        "stage_no",
+        "started_at",
+        "status",
+        "student",
+        "student_progress",
+        "tier",
+        "time_limit_seconds",
+        "time_spent_seconds",
+        "total_questions"
+      ],
+      "description": "Studentquizattempt records.",
+      "display_field": null,
+      "doctype": "StudentQuizAttempt",
+      "pk": "name"
+    },
+    "tabStudentReflection": {
+      "columns": [
+        "name",
+        "next_steps",
+        "reflection_content",
+        "reflection_prompt",
+        "related_competencies",
+        "self_assessment_rating",
+        "student",
+        "teacher_feedback",
+        "timestamp"
+      ],
+      "description": "Studentreflection records.",
+      "display_field": null,
+      "doctype": "StudentReflection",
+      "pk": "name"
+    },
+    "tabSubmission": {
+      "columns": [
+        "name",
+        "plagiarism_result",
+        "student_assignment",
+        "submission_content",
+        "submission_date",
+        "submission_type",
+        "submission_url",
+        "submitted_files"
+      ],
+      "description": "Submission records.",
+      "display_field": null,
+      "doctype": "Submission",
       "pk": "name"
     },
     "tabTAP Language": {
@@ -820,35 +1362,43 @@
         "language_name",
         "name"
       ],
-      "description": "Tap Language records. Key columns: name (Primary Key).",
+      "description": "Tap Language records.",
       "display_field": null,
       "doctype": "TAP Language",
       "pk": "name"
     },
-    "tabUnitContentItem": {
+    "tabTeacher": {
       "columns": [
-        "content",
-        "content_type",
-        "is_optional",
+        "course_level",
+        "department",
+        "email_id",
+        "first_name",
+        "gender",
+        "glific_id",
+        "language",
+        "last_name",
         "name",
-        "note_for_teacher"
+        "phone_number",
+        "school_id",
+        "swiftchat_id",
+        "teacher_batch",
+        "teacher_role"
       ],
-      "description": "Unitcontentitem records. Key columns: name (Primary Key).",
+      "description": "Teacher records.",
       "display_field": null,
-      "doctype": "UnitContentItem",
+      "doctype": "Teacher",
       "pk": "name"
     },
-    "tabUnitLearningObjective": {
+    "tabUnit": {
       "columns": [
-        "assessment_weight",
-        "importance_level",
-        "learning_objectives",
+        "activities",
+        "course",
         "name",
-        "target_mastery_level"
+        "name1"
       ],
-      "description": "Unitlearningobjective records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "UnitLearningObjective",
+      "description": "Unit records. Key field: name1.",
+      "display_field": "name1",
+      "doctype": "Unit",
       "pk": "name"
     },
     "tabVideoClass": {
@@ -870,26 +1420,9 @@
         "video_translations",
         "video_youtube_url"
       ],
-      "description": "Videoclass records. Key columns: name (Primary Key).",
+      "description": "Videoclass records.",
       "display_field": null,
       "doctype": "VideoClass",
-      "pk": "name"
-    },
-    "tabVideoTranslation": {
-      "columns": [
-        "language",
-        "name",
-        "subtitle_file",
-        "translated_description",
-        "translated_name",
-        "video_file",
-        "video_plio_url",
-        "video_transcript",
-        "video_youtube_url"
-      ],
-      "description": "Videotranslation records. Key columns: name (Primary Key).",
-      "display_field": null,
-      "doctype": "VideoTranslation",
       "pk": "name"
     }
   }
