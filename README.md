@@ -1,77 +1,77 @@
 # TAP AI - Conversational AI Engine
 
-This project extends the TAP AI Frappe application with a powerful, conversational AI layer. It provides a single, robust API endpoint that can understand user questions and intelligently route them to the best tool—either a direct database query or a semantic vector search—to provide accurate, context-aware answers.
+This project extends the TAP AI Frappe application with a powerful, conversational AI layer. It provides a single, robust API endpoint that can understand user questions and intelligently route the user's request to the appropriate execution engine.
 
-The system is designed for multi-turn conversations, automatically managing chat history to understand follow-up questions. It features **asynchronous processing via RabbitMQ workers**, **voice input/output support**, and **dynamic configuration management** for seamless integration with TAP LMS.
+The system is designed for multi-turn conversations, automatically managing chat history to understand follow-up questions. It features asynchronous processing via RabbitMQ workers, voice input/output support, and robust fallback mechanisms.
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [Project Overview](#-project-overview)
-- [Core Architecture](#-core-architecture)
-- [System Workflow](#-system-workflow)
-- [Complete Codebase Structure](#-complete-codebase-structure)
-- [Dependencies](#-dependencies)
-- [Installation](#-installation)
-- [Configuration](#-configuration)
-- [One-Time Setup](#-one-time-setup)
-- [Testing](#-testing)
-- [API Documentation](#-api-documentation)
-- [Worker System](#-worker-system)
-- [Core File Descriptions](#-core-file-descriptions)
-- [Telegram Bot Demo](#-telegram-bot-demo-local-setup)
-- [Deployment Guide](#-deployment-guide)
-- [Troubleshooting](#-troubleshooting)
-
----
-
-## 🎯 Project Overview
-
-**TAP AI** is a conversational AI engine built on top of the Frappe framework. It intelligently routes user queries to specialized execution engines:
-
-- **Text-to-SQL Engine**: For factual, database-specific queries
-- **Vector RAG Engine**: For conceptual, semantic, and summarization queries
-- **RabbitMQ Worker Architecture**: Asynchronous processing for scalability
-- **Voice Processing**: STT → LLM → TTS pipeline for voice queries
-
-**Key Features:**
-- 🧠 Intelligent routing using LLMs
-- 💬 Multi-turn conversation support with history management
-- 📊 Hybrid query execution (SQL + Vector Search)
-- 🔄 Automatic fallback mechanisms
-- 🤖 Telegram bot integration
-- 🔐 Rate limiting and authentication built-in
-- 📱 Voice input/output support via Telegram
-- ⚡ Asynchronous processing with RabbitMQ
-- 🔧 Dynamic configuration for TAP LMS integration
-- 📊 Admin-controlled DocType exclusion system
-
-**Technology Stack:**
-- **Backend**: Python 3.10+
-- **Framework**: Frappe (ERPNext)
-- **LLM**: OpenAI GPT models
-- **Vector DB**: Pinecone
-- **Database**: MariaDB/MySQL
-- **Message Queue**: RabbitMQ (Pika)
-- **Caching**: Redis
-- **Web Framework**: Flask (for Telegram webhooks)
-- **ORM**: SQLAlchemy
-
-**Language Composition:**
-- **Python**: 107,850 bytes (99%)
-- **JavaScript**: 564 bytes (1%)
+- [Project Overview](#project-overview)
+- [Core Architecture](#core-architecture)
+- [System Workflow](#system-workflow)
+- [Complete Codebase Structure](#complete-codebase-structure)
+- [Dependencies](#dependencies)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [One-Time Setup](#one-time-setup)
+- [Testing](#testing)
+- [API Documentation](#api-documentation)
+- [Worker System](#worker-system)
+- [Core File Descriptions](#core-file-descriptions)
+- [Telegram Bot Demo](#telegram-bot-demo-local-setup)
+- [Deployment Guide](#deployment-guide)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## 🚀 Core Architecture
+## Project Overview
+
+TAP AI is a conversational AI engine built on top of the Frappe framework. It intelligently routes user queries to specialized execution engines:
+
+- Text-to-SQL Engine: For factual, database-specific queries
+- Vector RAG Engine: For conceptual, semantic, and summarization queries
+- RabbitMQ Worker Architecture: Asynchronous processing for scalability
+- Voice Processing: STT -> LLM -> TTS pipeline for voice queries
+
+Key Features:
+- Intelligent routing using LLMs
+- Multi-turn conversation support with history management
+- Hybrid query execution (SQL + Vector Search)
+- Automatic fallback mechanisms
+- Telegram bot integration
+- Rate limiting and authentication built-in
+- Voice input/output support via Telegram
+- Asynchronous processing with RabbitMQ
+- Dynamic configuration for TAP LMS integration
+- Admin-controlled DocType exclusion system
+
+Technology Stack:
+- Backend: Python 3.10+
+- Framework: Frappe (ERPNext)
+- LLM: OpenAI GPT models
+- Vector DB: Pinecone
+- Database: MariaDB/MySQL
+- Message Queue: RabbitMQ (Pika)
+- Caching: Redis
+- Web Framework: Flask (for Telegram webhooks)
+- ORM: SQLAlchemy
+
+Language Composition:
+- Python: 99.6%
+- JavaScript: 0.4%
+
+---
+
+## Core Architecture
 
 The system's intelligence lies in its central router, which acts as a decision-making brain. When a query is received, it follows this flow:
 
-1. **Intelligent Routing:** An LLM analyzes the user's query to determine its intent.
-2. **Tool Selection:**
-   - For factual, specific questions (e.g., "list all...", "how many..."), it selects the **Text-to-SQL Engine**.
-   - For conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain..."), it selects the **Vector RAG Engine**.
-3. **Execution & Fallback:** The chosen engine executes the query. If it fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
-4. **Answer Synthesis:** The retrieved data is passed to an LLM, which generates a final, human-readable answer.
+1. Intelligent Routing: An LLM analyzes the user's query to determine its intent.
+2. Tool Selection:
+   - For factual, specific questions (e.g., "list all...", "how many..."), it selects the Text-to-SQL Engine.
+   - For conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain..."), it selects the Vector RAG Engine.
+3. Execution & Fallback: The chosen engine executes the query. If it fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
+4. Answer Synthesis: The retrieved data is passed to an LLM, which generates a final, human-readable answer.
 
 ### System Flow Diagram
 
@@ -109,27 +109,27 @@ graph TD
 
     User -->|Text| QueryAPI
     User -->|Voice| VoiceQueryAPI
-    
+
     QueryAPI -->|Request| RabbitMQ
     VoiceQueryAPI -->|Request| RabbitMQ
-    
+
     RabbitMQ -->|audio_stt_queue| STTWorker
     RabbitMQ -->|text_query_queue| LLMWorker
     RabbitMQ -->|audio_tts_queue| TTSWorker
-    
+
     STTWorker -->|Transcribed Text| RabbitMQ
     LLMWorker -->|Route Query| Router
     Router -->|Factual| SQL
     Router -->|Conceptual| RAG
-    
+
     SQL -->|SQL Query| MariaDB
     RAG -->|Vector Search| PineconeDB
-    
+
     LLMWorker -->|Answer| TTSWorker
     TTSWorker -->|Audio File| MariaDB
 ```
 
-### ⚙️ Engine Robustness
+### Engine Robustness
 
 The robustness of the system comes from the specialized design of each engine.
 
@@ -161,81 +161,100 @@ graph TD
 
 ---
 
-## 📁 Complete Codebase Structure
+## Complete Codebase Structure
 
-```
-tap_ai/
-├── __init__.py                          # Package initialization
-├── hooks.py                             # Frappe hooks for app lifecycle
-├── modules.txt                          # Module declaration
-├── patches.txt                          # Database migration patches
-│
-├── api/                                 # REST API Endpoints
-│   ├── __init__.py
-│   ├── query.py                         # Text query endpoint (async via RabbitMQ)
-│   ├── result.py                        # Poll for text query results
-│   ├── voice_query.py                   # Voice query endpoint (STT → LLM → TTS)
-│   └── voice_result.py                  # Poll for voice query results + TTS
-│
-├── services/                            # Core execution engines
-│   ├── __init__.py
-│   ├── router.py                        # Intelligent router (brain of system)
-│   ├── sql_answerer.py                  # Text-to-SQL engine
-│   ├── rag_answerer.py                  # Vector RAG engine
-│   ├── doctype_selector.py              # DocType selection for RAG
-│   ├── pinecone_store.py                # Pinecone vector database integration
-│   ├── pinecone_index.py                # Pinecone index lifecycle
-│   └── ratelimit.py                     # API rate limiting utility
-│
-├── workers/                             # RabbitMQ Background Workers
-│   ├── llm_worker.py                    # Main LLM routing worker
-│   ├── stt_worker.py                    # Speech-to-Text worker (Whisper)
-│   └── tts_worker.py                    # Text-to-Speech worker (OpenAI TTS)
-│
-├── schema/                              # Database schema generation
-│   ├── __init__.py
-│   ├── generate_schema.py               # Schema generator script
-│   └── tap_ai_schema.json               # Generated schema file
-│
-├── infra/                               # Infrastructure utilities
-│   ├── __init__.py
-│   ├── config.py                        # Centralized config loader
-│   └── sql_catalog.py                   # Schema catalog loader
-│
-├── utils/                               # Utility functions
-│   ├── __init__.py
-│   ├── dynamic_config.py                # Dynamic config for TAP LMS integration
-│   └── mq.py                            # RabbitMQ publisher utility
-│
-├── config/                              # Frappe app configuration
-│   └── __init__.py
-│
-├── public/                              # Static assets
-│   └── .gitkeep
-│
-├── templates/                           # Frappe templates
-│   ├── __init__.py
-│   └── pages/
-│
-└── tap_ai/                              # Additional modules (if any)
-
-# Root-level files
-
-├── README.md                            # This file
-├── requirements.txt                     # Python dependencies
-├── pyproject.toml                       # Project metadata & build config
-├── license.txt                          # License information
-├── .gitignore                           # Git ignore rules
-├── .eslintrc                            # ESLint configuration
-├── .editorconfig                        # Editor configuration
-├── .pre-commit-config.yaml              # Pre-commit hooks
-├── __init__.py                          # Root package init
-└── telegram_webhook.py                  # Telegram bot bridge script
+```text
+.
+├── .editorconfig
+├── .eslintrc
+├── .gitignore
+├── .pre-commit-config.yaml
+├── README.md
+├── __init__.py
+├── license.txt
+├── pyproject.toml
+├── requirements.txt
+├── telegram_webhook.py
+├── test_remote_connection.py
+└── tap_ai/
+    ├── __init__.py
+    ├── hooks.py
+    ├── modules.txt
+    ├── patches.txt
+    ├── test_remote_db.py
+    ├── api/
+    │   ├── __init__.py
+    │   ├── query.py
+    │   ├── result.py
+    │   ├── voice_query.py
+    │   └── voice_result.py
+    ├── config/
+    │   └── __init__.py
+    ├── infra/
+    │   ├── config.py
+    │   ├── llm_client.py
+    │   ├── schema.py
+    │   └── sql_catalog.py
+    ├── public/
+    │   └── .gitkeep
+    ├── schema/
+    │   ├── __init__.py
+    │   ├── generate_schema.py
+    │   ├── list_system_doctypes.py
+    │   └── tap_ai_schema.json
+    ├── services/
+    │   ├── __init__.py
+    │   ├── doctype_selector.py
+    │   ├── pinecone_index.py
+    │   ├── pinecone_store.py
+    │   ├── rag_answerer.py
+    │   ├── ratelimit.py
+    │   ├── router.py
+    │   └── sql_answerer.py
+    ├── tap_ai/
+    │   ├── __init__.py
+    │   └── doctype/
+    │       ├── __init__.py
+    │       ├── ai_integration_config/
+    │       │   ├── __init__.py
+    │       │   ├── ai_integration_config.js
+    │       │   ├── ai_integration_config.json
+    │       │   ├── ai_integration_config.py
+    │       │   └── test_ai_integration_config.py
+    │       ├── ai_knowledge_base/
+    │       │   ├── __init__.py
+    │       │   ├── ai_knowledge_base.js
+    │       │   ├── ai_knowledge_base.json
+    │       │   ├── ai_knowledge_base.py
+    │       │   └── test_ai_knowledge_base.py
+    │       ├── doctype_list/
+    │       │   ├── __init__.py
+    │       │   ├── doctype_list.json
+    │       │   └── doctype_list.py
+    │       └── excludeddoctypes/
+    │           ├── __init__.py
+    │           ├── excludeddoctypes.js
+    │           ├── excludeddoctypes.json
+    │           ├── excludeddoctypes.py
+    │           └── test_excludeddoctypes.py
+    ├── templates/
+    │   ├── __init__.py
+    │   └── pages/
+    │       └── __init__.py
+    ├── utils/
+    │   ├── __init__.py
+    │   ├── dynamic_config.py
+    │   ├── mq.py
+    │   └── remote_db.py
+    └── workers/
+        ├── llm_worker.py
+        ├── stt_worker.py
+        └── tts_worker.py
 ```
 
 ---
 
-## 📦 Dependencies
+## Dependencies
 
 ### Core Dependencies
 
@@ -283,7 +302,7 @@ tap_ai/
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Prerequisites
 
@@ -344,7 +363,7 @@ pre-commit install
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 ### Step 1: Add Configuration to `site_config.json`
 
@@ -355,16 +374,16 @@ Edit your site's `site_config.json` file and add:
   "openai_api_key": "sk-your-openai-key-here",
   "primary_llm_model": "gpt-4o-mini",
   "embedding_model": "text-embedding-3-small",
-  
+
   "pinecone_api_key": "pcn-your-pinecone-key-here",
   "pinecone_index": "tap-ai-byo",
-  
+
   "rabbitmq_url": "amqp://guest:guest@localhost:5672/",
-  
+
   "redis_host": "localhost",
   "redis_port": 6379,
   "redis_db": 0,
-  
+
   "max_context_length": 2048,
   "vector_search_k": 5,
   "max_response_tokens": 500
@@ -400,7 +419,7 @@ RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 
 ---
 
-## 🧭 One-Time Setup
+## One-Time Setup
 
 ### Step 1: Generate the Database Schema
 
@@ -424,7 +443,7 @@ bench execute tap_ai.services.pinecone_store.cli_upsert_all
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ### Text Query API
 
@@ -474,11 +493,11 @@ bench execute tap_ai.workers.tts_worker.start
 
 ---
 
-## 🌐 API Documentation
+## API Documentation
 
 ### Text Query Endpoint
 
-**POST** `/api/method/tap_ai.api.query.query`
+POST `/api/method/tap_ai.api.query.query`
 
 Request body:
 ```json
@@ -497,7 +516,7 @@ Response:
 
 ### Text Result Polling
 
-**GET** `/api/method/tap_ai.api.result.result?request_id=REQ_abc12345`
+GET `/api/method/tap_ai.api.result.result?request_id=REQ_abc12345`
 
 Response (pending):
 ```json
@@ -520,7 +539,7 @@ Response (success):
 
 ### Voice Query Endpoint
 
-**POST** `/api/method/tap_ai.api.voice_query.voice_query`
+POST `/api/method/tap_ai.api.voice_query.voice_query`
 
 Request body:
 ```json
@@ -539,7 +558,7 @@ Response:
 
 ### Voice Result Polling
 
-**GET** `/api/method/tap_ai.api.voice_result.voice_result?request_id=VREQ_xyz98765`
+GET `/api/method/tap_ai.api.voice_result.voice_result?request_id=VREQ_xyz98765`
 
 Response (success):
 ```json
@@ -554,7 +573,7 @@ Response (success):
 
 ---
 
-## ⚙️ Worker System
+## Worker System
 
 The system uses RabbitMQ for asynchronous processing. Three workers handle different tasks:
 
@@ -566,7 +585,7 @@ The system uses RabbitMQ for asynchronous processing. Three workers handle diffe
 - Routes voice queries to TTS worker
 - Updates request status in Redis cache
 
-**Start with:**
+Start with:
 ```bash
 bench execute tap_ai.workers.llm_worker.start
 ```
@@ -579,7 +598,7 @@ bench execute tap_ai.workers.llm_worker.start
 - Detects language of transcription
 - Routes transcribed text to LLM worker
 
-**Start with:**
+Start with:
 ```bash
 bench execute tap_ai.workers.stt_worker.start
 ```
@@ -591,87 +610,87 @@ bench execute tap_ai.workers.stt_worker.start
 - Saves audio file to Frappe File Manager
 - Returns audio URL and marks request as complete
 
-**Start with:**
+Start with:
 ```bash
 bench execute tap_ai.workers.tts_worker.start
 ```
 
 ---
 
-## 🔍 Core File Descriptions
+## Core File Descriptions
 
 ### API Layer
 
-**`tap_ai/api/query.py`**
+`tap_ai/api/query.py`
 - Text query entry point
 - Rate limiting check
 - Publishes to RabbitMQ `text_query_queue`
 - Returns request_id for polling
 
-**`tap_ai/api/result.py`**
+`tap_ai/api/result.py`
 - Polls for text query result
 - Retrieves from Redis cache
 
-**`tap_ai/api/voice_query.py`**
+`tap_ai/api/voice_query.py`
 - Voice query entry point
 - Publishes to RabbitMQ `audio_stt_queue`
 - Returns request_id for polling
 
-**`tap_ai/api/voice_result.py`**
+`tap_ai/api/voice_result.py`
 - Polls voice results
 - Handles TTS generation on-demand
 - Returns audio URL when ready
 
 ### Services Layer
 
-**`tap_ai/services/router.py`**
+`tap_ai/services/router.py`
 - Central query routing logic
 - Chooses between SQL and RAG engines
 - Manages fallback logic
 - Handles chat history
 
-**`tap_ai/services/sql_answerer.py`**
+`tap_ai/services/sql_answerer.py`
 - Generates SQL from natural language
 - Builds intelligent schema for LLM
 - Executes queries against MariaDB
 - Returns structured data
 
-**`tap_ai/services/rag_answerer.py`**
+`tap_ai/services/rag_answerer.py`
 - Retrieves semantically similar documents
 - Refines queries with chat history
 - Synthesizes answers from context
 - Handles multi-turn conversations
 
-**`tap_ai/services/doctype_selector.py`**
+`tap_ai/services/doctype_selector.py`
 - Selects relevant DocTypes for RAG
 - Reduces search space
 - Improves retrieval accuracy
 
-**`tap_ai/services/pinecone_store.py`**
+`tap_ai/services/pinecone_store.py`
 - Manages Pinecone interactions
 - Upserts documents with embeddings
 - Performs semantic search
 
-**`tap_ai/services/ratelimit.py`**
+`tap_ai/services/ratelimit.py`
 - Enforces API rate limits
 - Uses Redis for distributed counting
 - Tracks requests per user
 
 ### Workers
 
-**`tap_ai/workers/llm_worker.py`**
+`tap_ai/workers/llm_worker.py`
 - Main processing worker
 - Routes queries through the dual-engine system
 - Manages conversation context
 - Bridges text and voice pipelines
 
-**`tap_ai/workers/stt_worker.py`**
+`tap_ai/workers/stt_worker.py`
 - Speech-to-Text processing
 - Audio download and handling
 - Language detection
 - Whisper API integration
 
-**`tap_ai/workers/tts_worker.py`**
+`tap_ai/workers/tts_worker.py`
 - Text-to-Speech synthesis
 - OpenAI TTS integration
 - Frappe File Manager integration
@@ -679,21 +698,24 @@ bench execute tap_ai.workers.tts_worker.start
 
 ### Utilities
 
-**`tap_ai/utils/dynamic_config.py`**
+`tap_ai/utils/dynamic_config.py`
 - Decouples TAP AI from TAP LMS schema changes
 - Handles dynamic DocType mapping
 - Manages user profiles with enrollment data
 - Singleton pattern for configuration caching
 - Validation and context resolution rules
 
-**`tap_ai/utils/mq.py`**
+`tap_ai/utils/mq.py`
 - RabbitMQ publisher
 - Queue declaration and management
 - Persistent message delivery
 
+`tap_ai/utils/remote_db.py`
+- Remote MariaDB/MySQL connection helper for running queries outside the local Frappe DB
+
 ### Infrastructure
 
-**`tap_ai/infra/config.py`**
+`tap_ai/infra/config.py`
 - Centralized configuration loader
 - Frappe integration with fallbacks
 - Works both inside Frappe and standalone
@@ -701,7 +723,7 @@ bench execute tap_ai.workers.tts_worker.start
 
 ### Schema Generation
 
-**`tap_ai/schema/generate_schema.py`**
+`tap_ai/schema/generate_schema.py`
 - Dynamically discovers all Frappe DocTypes
 - Builds intelligent schema for SQL queries
 - Supports admin-controlled exclusions
@@ -709,12 +731,12 @@ bench execute tap_ai.workers.tts_worker.start
 
 ---
 
-## 🤖 Telegram Bot Demo (Local Setup)
+## Telegram Bot Demo (Local Setup)
 
 ### Architecture Overview
 
 ```
-User → Telegram → Ngrok → telegram_webhook.py → Frappe API → AI Engine
+User -> Telegram -> Ngrok -> telegram_webhook.py -> Frappe API -> AI Engine
 ```
 
 ### Prerequisites
@@ -728,7 +750,7 @@ User → Telegram → Ngrok → telegram_webhook.py → Frappe API → AI Engine
 1. Search for `@BotFather` on Telegram
 2. Send `/newbot`
 3. Follow instructions
-4. **Copy the bot token** (e.g., `123456:ABC-DEF1234`)
+4. Copy the bot token (e.g., `123456:ABC-DEF1234`)
 
 ### Step 2: Set Up Ngrok
 
@@ -765,11 +787,11 @@ curl -F "url=https://<NGROK_URL>/webhook" \
 
 ### Step 5: Test the Bot
 
-Open Telegram and start a conversation with your bot!
+Open Telegram and start a conversation with your bot.
 
 ---
 
-## 📦 Deployment Guide
+## Deployment Guide
 
 ### Local Development
 
@@ -813,11 +835,12 @@ command=bench execute tap_ai.workers.tts_worker.start
 directory=/opt/frappe-bench
 autostart=true
 autorestart=true
+autorestart=true
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Issue: "OpenAI API Key not found"
 
@@ -867,13 +890,13 @@ tail -f frappe-bench/logs/frappe.log
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the terms specified in `license.txt`.
 
 ---
 
-**Last Updated:** 2026-03-18  
-**Version:** 2.0.0  
-**Author:** Anish Aman  
-**Repository:** theapprenticeproject/Ai
+Last Updated: 2026-04-12 15:22:19
+Version: 2.0.0
+Author: Anish Aman
+Repository: theapprenticeproject/Ai
