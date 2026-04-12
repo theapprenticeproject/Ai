@@ -421,7 +421,13 @@ RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 
 ## One-Time Setup
 
-### Step 1: Generate the Database Schema
+### Step 1: Populate excluded DocTypes
+
+```bash
+bench execute tap_ai.schema.generate_schema.cli_populate_excluded
+```
+
+### Step 2: Generate the database schema
 
 ```bash
 bench execute tap_ai.schema.generate_schema.cli
@@ -429,13 +435,13 @@ bench execute tap_ai.schema.generate_schema.cli
 
 This creates `tap_ai_schema.json` needed by SQL and RAG engines.
 
-### Step 2: Create Pinecone Index
+### Step 3: Create Pinecone Index
 
 ```bash
 bench execute tap_ai.services.pinecone_index.cli_ensure_index
 ```
 
-### Step 3: Populate Pinecone Index
+### Step 4: Populate Pinecone Index
 
 ```bash
 bench execute tap_ai.services.pinecone_store.cli_upsert_all
@@ -471,7 +477,7 @@ curl -X POST "http://localhost:8000/api/method/tap_ai.api.voice_query.voice_quer
 # Response
 {"request_id": "VREQ_x1y2z3w4"}
 
-# Poll for voice result
+# Poll voice result
 curl "http://localhost:8000/api/method/tap_ai.api.voice_result.voice_result?request_id=VREQ_x1y2z3w4"
 ```
 
@@ -721,13 +727,51 @@ bench execute tap_ai.workers.tts_worker.start
 - Works both inside Frappe and standalone
 - Service status validation
 
+`tap_ai/infra/llm_client.py`
+- Centralized LLM client wrapper used by the services layer
+
+`tap_ai/infra/schema.py`
+- Schema loading helpers used by the SQL/Text-to-SQL pipeline
+
 ### Schema Generation
 
+`tap_ai/schema/list_system_doctypes.py`
+- Lists DocTypes classified as system DocTypes
+
 `tap_ai/schema/generate_schema.py`
-- Dynamically discovers all Frappe DocTypes
-- Builds intelligent schema for SQL queries
-- Supports admin-controlled exclusions
-- Auto-detects joins and relationships
+- Fetches DocType metadata from a remote database
+- Uses the ExcludedDoctypes DocType to exclude DocTypes from the generated schema
+- Writes the generated schema to `tap_ai/schema/tap_ai_schema.json`
+
+`tap_ai/test_remote_db.py`
+- Tests for the remote database connection utilities
+
+`test_remote_connection.py`
+- Root-level script for testing remote DB connectivity
+
+### Frappe DocTypes
+
+`tap_ai/tap_ai/doctype/ai_integration_config/`
+- `ai_integration_config.json`: DocType definition
+- `ai_integration_config.py`: DocType server logic
+- `ai_integration_config.js`: DocType client script
+- `test_ai_integration_config.py`: DocType tests
+
+`tap_ai/tap_ai/doctype/ai_knowledge_base/`
+- `ai_knowledge_base.json`: DocType definition
+- `ai_knowledge_base.py`: DocType server logic
+- `ai_knowledge_base.js`: DocType client script
+- `test_ai_knowledge_base.py`: DocType tests
+
+`tap_ai/tap_ai/doctype/doctype_list/`
+- `doctype_list.json`: DocType definition
+- `doctype_list.py`: DocType server logic
+
+`tap_ai/tap_ai/doctype/excludeddoctypes/`
+- `excludeddoctypes.json`: DocType definition
+- `excludeddoctypes.py`: DocType server logic
+- `excludeddoctypes.js`: DocType client script
+- `test_excludeddoctypes.py`: DocType tests
 
 ---
 
@@ -809,7 +853,7 @@ bench execute tap_ai.workers.stt_worker.start
 bench execute tap_ai.workers.tts_worker.start
 
 # Terminal 5: Ngrok (optional for Telegram)
-ngrok http 5000
+grok http 5000
 ```
 
 ### Production Deployment
@@ -896,7 +940,7 @@ This project is licensed under the terms specified in `license.txt`.
 
 ---
 
-Last Updated: 2026-04-12 15:22:19
+Last Updated: 2026-04-12 15:29:33
 Version: 2.0.0
 Author: Anish Aman
 Repository: theapprenticeproject/Ai
