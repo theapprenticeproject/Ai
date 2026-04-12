@@ -29,7 +29,7 @@ def _pc() -> Pinecone:
 
 def _index():
     pc = _pc()
-    name = get_config("pinecone_index") or "tap-lms-byo"
+    name = get_config("pinecone_index") or "tap-ai-byo"
     return pc.Index(name)
 
 def _emb() -> OpenAIEmbeddings:
@@ -175,7 +175,6 @@ def upsert_doctype(
                     "doctype": doctype,
                     "record_ids": record_ids,
                     "count": len(group),
-                    "text": text,
                 }
 
                 # Ensure ID is strictly ASCII for Pinecone
@@ -204,7 +203,6 @@ def upsert_doctype(
                 "doctype": doctype,
                 "record_ids": record_ids,
                 "count": len(group),
-                "text": text,
             })
 
         flush()
