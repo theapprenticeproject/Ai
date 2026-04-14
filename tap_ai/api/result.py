@@ -5,16 +5,6 @@ import json
 import time
 
 
-VOICE_PROCESSING_STATES = {
-    "pending",
-    "processing",
-    "transcribing",
-    "transcribed",
-    "generating_answer",
-    "text_generated",
-    "generating_audio",
-}
-
 MAX_WAIT_SECONDS = 55
 MIN_POLL_INTERVAL_MS = 100
 MAX_POLL_INTERVAL_MS = 2000
@@ -68,18 +58,50 @@ def _is_voice_response(data: dict, request_id: str) -> bool:
     )
 
 
-def _format_result(data: dict, request_id: str) -> dict:
-    # Keep voice clients aligned with old voice_result semantics while using one endpoint.
-    if _is_voice_response(data, request_id) and data.get("status") in VOICE_PROCESSING_STATES:
-        return {
-            "status": "processing",
-            "request_id": request_id,
-            "transcribed_text": data.get("transcribed_text"),
-            "answer_text": data.get("answer_text") or data.get("answer"),
-            "language": data.get("language"),
-            "audio_url": data.get("audio_url"),
-        }
-    return data
+def _canonical_status(raw_status: str | None) -> str:
+    if raw_status == "success":
+        return "success"
+    if raw_status == "failed":
+        return "failed"
+    return "processing"
+
+
+def _normalize_result(data: dict, request_id: str) -> dict:
+    """
+    Returns a stable response contract for both text and voice.
+    """
+    mode = "voice" if _is_voice_response(data, request_id) else "text"
+    raw_status = data.get("status")
+    status = _canonical_status(raw_status)
+
+    answer = data.get("answer") or data.get("answer_text")
+    query = data.get("query") or data.get("transcribed_text")
+
+    out = {
+        "request_id": request_id,
+        "mode": mode,
+        "status": status,
+        "raw_status": raw_status,
+        "answer": answer,
+        "answer_text": answer,
+        "query": query,
+        "transcribed_text": data.get("transcribed_text"),
+        "audio_url": data.get("audio_url"),
+        "language": data.get("language"),
+        "error": data.get("error"),
+    }
+
+    # Preserve useful existing fields when available.
+    if "history" in data:
+        out["history"] = data.get("history")
+    if "metadata" in data:
+        out["metadata"] = data.get("metadata")
+    if "session_id" in data:
+        out["session_id"] = data.get("session_id")
+    if "user_id" in data:
+        out["user_id"] = data.get("user_id")
+
+    return out
 
 @frappe.whitelist(methods=["GET"], allow_guest=True)
 def result(request_id: str, wait_seconds: int | None = None, poll_interval_ms: int | None = None):
@@ -94,7 +116,7 @@ def result(request_id: str, wait_seconds: int | None = None, poll_interval_ms: i
         frappe.throw(f"No such request_id: {request_id}")
 
     data = json.loads(cached)
-    out = _format_result(data, request_id)
+    out = _normalize_result(data, request_id)
 
     if out.get("status") != "processing":
         return out
@@ -120,6 +142,6 @@ def result(request_id: str, wait_seconds: int | None = None, poll_interval_ms: i
             frappe.throw(f"No such request_id: {request_id}")
 
         data = json.loads(cached)
-        out = _format_result(data, request_id)
+        out = _normalize_result(data, request_id)
         if out.get("status") != "processing":
             return out
