@@ -4,6 +4,10 @@ This project extends the TAP AI Frappe application with a powerful, conversation
 
 The system is designed for multi-turn conversations, automatically managing chat history to understand follow-up questions. It features **asynchronous processing via RabbitMQ workers**, **voice input/output support**, and **dynamic configuration management** for seamless integration with TAP LMS.
 
+Current deployment topology:
+- **AI application server:** `ai.evalix.xyz` (hosts TAP AI code and workers)
+- **Remote database server:** `data.evalix.xyz` (PostgreSQL)
+
 ## 📋 Table of Contents
 
 - [Project Overview](#-project-overview)
@@ -34,23 +38,23 @@ The system is designed for multi-turn conversations, automatically managing chat
 - **Voice Processing**: STT → LLM → TTS pipeline for voice queries
 
 **Key Features:**
-- 🧠 Intelligent routing using LLMs
-- 💬 Multi-turn conversation support with history management
-- 📊 Hybrid query execution (SQL + Vector Search)
-- 🔄 Automatic fallback mechanisms
-- 🤖 Telegram bot integration
-- 🔐 Rate limiting and authentication built-in
-- 📱 Voice input/output support via Telegram
-- ⚡ Asynchronous processing with RabbitMQ
-- 🔧 Dynamic configuration for TAP LMS integration
-- 📊 Admin-controlled DocType exclusion system
+- Intelligent routing using LLMs
+- Multi-turn conversation support with history management
+- Hybrid query execution (SQL + Vector Search)
+- Automatic fallback mechanisms
+- Telegram bot integration
+- Rate limiting and authentication built-in
+- Voice input/output support via Telegram
+- Asynchronous processing with RabbitMQ
+- Dynamic configuration for TAP LMS integration
+- Admin-controlled DocType exclusion system
 
 **Technology Stack:**
 - **Backend**: Python 3.10+
 - **Framework**: Frappe (ERPNext)
 - **LLM**: OpenAI GPT models
 - **Vector DB**: Pinecone
-- **Database**: MariaDB/MySQL
+- **Database**: Remote PostgreSQL (`data.evalix.xyz`)
 - **Message Queue**: RabbitMQ (Pika)
 - **Caching**: Redis
 - **Web Framework**: Flask (for Telegram webhooks)
@@ -82,8 +86,7 @@ graph TD
     end
 
     subgraph "API Layer"
-        QueryAPI["api/query.py<br><b>Text Query API</b>"]
-        VoiceQueryAPI["api/voice_query.py<br><b>Voice Query API</b>"]
+      QueryAPI["api/query.py<br><b>Unified Query API (Text + Voice)</b>"]
     end
 
     subgraph "Message Queue"
@@ -103,15 +106,12 @@ graph TD
     end
 
     subgraph "Data Layer"
-        MariaDB[(Frappe<br>MariaDB)]
+      PostgresDB[(Remote PostgreSQL<br>data.evalix.xyz)]
         PineconeDB[(Pinecone<br>Vector DB)]
     end
 
-    User -->|Text| QueryAPI
-    User -->|Voice| VoiceQueryAPI
-    
+    User -->|Text or Voice| QueryAPI
     QueryAPI -->|Request| RabbitMQ
-    VoiceQueryAPI -->|Request| RabbitMQ
     
     RabbitMQ -->|audio_stt_queue| STTWorker
     RabbitMQ -->|text_query_queue| LLMWorker
@@ -122,11 +122,11 @@ graph TD
     Router -->|Factual| SQL
     Router -->|Conceptual| RAG
     
-    SQL -->|SQL Query| MariaDB
+    SQL -->|SQL Query| PostgresDB
     RAG -->|Vector Search| PineconeDB
     
     LLMWorker -->|Answer| TTSWorker
-    TTSWorker -->|Audio File| MariaDB
+    TTSWorker -->|Audio File| PostgresDB
 ```
 
 ### ⚙️ Engine Robustness
@@ -142,7 +142,7 @@ graph TD
     A[User Query] --> B["1. Inspect Live Frappe Metadata"]
     B --> C["2. Create Rich Schema Prompt"]
     C --> D{LLM: Generate SQL}
-    D --> E[MariaDB]
+    D --> E[Remote PostgreSQL data.evalix.xyz]
     E --> F[Structured Data Rows]
 ```
 
@@ -172,10 +172,10 @@ tap_ai/
 │
 ├── api/                                 # REST API Endpoints
 │   ├── __init__.py
-│   ├── query.py                         # Text query endpoint (async via RabbitMQ)
-│   ├── result.py                        # Poll for text query results
-│   ├── voice_query.py                   # Voice query endpoint (STT → LLM → TTS)
-│   └── voice_result.py                  # Poll for voice query results + TTS
+│   ├── query.py                         # Unified query endpoint (text + voice, async via RabbitMQ)
+│   ├── result.py                        # Unified result polling endpoint (with optional server-side wait)
+│   ├── voice_query.py                   # Backward-compatible wrapper alias for unified query
+│   └── voice_result.py                  # Backward-compatible wrapper alias for unified result
 │
 ├── services/                            # Core execution engines
 │   ├── __init__.py
@@ -205,6 +205,7 @@ tap_ai/
 ├── utils/                               # Utility functions
 │   ├── __init__.py
 │   ├── dynamic_config.py                # Dynamic config for TAP LMS integration
+│   ├── remote_db.py                     # Remote PostgreSQL connection helpers
 │   └── mq.py                            # RabbitMQ publisher utility
 │
 ├── config/                              # Frappe app configuration
@@ -225,7 +226,9 @@ tap_ai/
 ├── requirements.txt                     # Python dependencies
 ├── pyproject.toml                       # Project metadata & build config
 ├── license.txt                          # License information
+├── .env                                 # Local environment variables (do not commit secrets)
 ├── .gitignore                           # Git ignore rules
+├── .vscode/                             # VS Code workspace settings
 ├── .eslintrc                            # ESLint configuration
 ├── .editorconfig                        # Editor configuration
 ├── .pre-commit-config.yaml              # Pre-commit hooks
@@ -240,7 +243,7 @@ tap_ai/
 ### Core Dependencies
 
 #### Database & ORM
-- `pymysql>=1.1.1` - MySQL database driver
+- `psycopg2-binary` (or equivalent) - PostgreSQL database driver for remote DB access
 - `sqlalchemy>=2.0.32` - SQL toolkit and ORM
 - `sqlalchemy-utils>=0.41.2` - SQLAlchemy utility functions
 
@@ -274,6 +277,8 @@ tap_ai/
 - `python-telegram-bot` - Telegram bot library
 - `requests` - HTTP client library
 
+> Note: Telegram integration dependencies are only required for `telegram_webhook.py` and are not included in `requirements.txt` by default.
+
 #### Testing
 - `pytest>=8.3.2` - Testing framework
 - `httpx>=0.27.2` - Async HTTP client
@@ -289,7 +294,7 @@ tap_ai/
 
 - Python 3.10+
 - Frappe bench installed
-- MariaDB/MySQL server running
+- Remote PostgreSQL server reachable (`data.evalix.xyz`)
 - RabbitMQ broker running
 - Redis server running
 - Pinecone account (for Vector RAG)
@@ -312,7 +317,7 @@ bench --site <site-name> install-app tap_ai
 bench pip install -r apps/tap_ai/requirements.txt
 
 # Or install key packages individually
-bench pip install langchain-openai pinecone pymysql pika redis
+bench pip install langchain-openai pinecone psycopg2-binary pika redis
 ```
 
 ### Step 3: Install Infrastructure
@@ -398,6 +403,8 @@ PINECONE_API_KEY=pcn-your-key
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 ```
 
+> Note: A local `.env` file is included for convenience. Do not store production secrets in source control.
+
 ---
 
 ## 🧭 One-Time Setup
@@ -426,10 +433,10 @@ bench execute tap_ai.services.pinecone_store.cli_upsert_all
 
 ## 🧪 Testing
 
-### Text Query API
+### Unified Query API (Text Example)
 
 ```bash
-# Basic text query
+# Unified query: text
 curl -X POST "http://localhost:8000/api/method/tap_ai.api.query.query" \
   -H "Content-Type: application/json" \
   -d '{"q": "List all courses", "user_id": "test_user"}'
@@ -437,23 +444,23 @@ curl -X POST "http://localhost:8000/api/method/tap_ai.api.query.query" \
 # Response
 {"request_id": "REQ_a1b2c3d4"}
 
-# Poll for result
+# Poll unified result (auto long-poll defaults)
 curl "http://localhost:8000/api/method/tap_ai.api.result.result?request_id=REQ_a1b2c3d4"
 ```
 
-### Voice Query API
+### Unified Query API (Voice Example)
 
 ```bash
-# Initiate voice query
-curl -X POST "http://localhost:8000/api/method/tap_ai.api.voice_query.voice_query" \
+# Unified query: voice
+curl -X POST "http://localhost:8000/api/method/tap_ai.api.query.query" \
   -H "Content-Type: application/json" \
   -d '{"audio_url": "https://example.com/audio.mp3", "user_id": "test_user"}'
 
 # Response
 {"request_id": "VREQ_x1y2z3w4"}
 
-# Poll for voice result
-curl "http://localhost:8000/api/method/tap_ai.api.voice_result.voice_result?request_id=VREQ_x1y2z3w4"
+# Poll unified result with explicit wait override
+curl "http://localhost:8000/api/method/tap_ai.api.result.result?request_id=VREQ_x1y2z3w4&wait_seconds=25&poll_interval_ms=500"
 ```
 
 ### Start RabbitMQ Workers
@@ -476,14 +483,23 @@ bench execute tap_ai.workers.tts_worker.start
 
 ## 🌐 API Documentation
 
-### Text Query Endpoint
+### Unified Query Endpoint
 
 **POST** `/api/method/tap_ai.api.query.query`
 
 Request body:
 ```json
 {
-  "q": "Your question here",
+  "q": "Your question here (text mode)",
+  "user_id": "unique_user_identifier"
+}
+```
+
+or
+
+```json
+{
+  "audio_url": "https://example.com/audio.mp3 (voice mode)",
   "user_id": "unique_user_identifier"
 }
 ```
@@ -495,15 +511,22 @@ Response:
 }
 ```
 
-### Text Result Polling
+### Unified Result Polling
 
 **GET** `/api/method/tap_ai.api.result.result?request_id=REQ_abc12345`
+
+Optional query params:
+- `wait_seconds` (0-55)
+- `poll_interval_ms` (100-2000)
+
+If omitted, TAP AI auto-tunes defaults by mode:
+- text: `wait_seconds=8`, `poll_interval_ms=300`
+- voice: `wait_seconds=25`, `poll_interval_ms=500`
 
 Response (pending):
 ```json
 {
-  "status": "pending",
-  "query": "Your question"
+  "status": "processing"
 }
 ```
 
@@ -518,7 +541,13 @@ Response (success):
 }
 ```
 
-### Voice Query Endpoint
+### Legacy Voice Query Alias (Optional)
+
+Primary endpoint:
+
+**POST** `/api/method/tap_ai.api.query.query`
+
+Backward-compatible alias:
 
 **POST** `/api/method/tap_ai.api.voice_query.voice_query`
 
@@ -537,9 +566,22 @@ Response:
 }
 ```
 
-### Voice Result Polling
+### Legacy Voice Result Alias (Optional)
+
+Primary endpoint:
+
+**GET** `/api/method/tap_ai.api.result.result?request_id=VREQ_xyz98765`
+
+Backward-compatible alias:
 
 **GET** `/api/method/tap_ai.api.voice_result.voice_result?request_id=VREQ_xyz98765`
+
+Response (processing):
+```json
+{
+  "status": "processing"
+}
+```
 
 Response (success):
 ```json
@@ -551,6 +593,8 @@ Response (success):
   "language": "en"
 }
 ```
+
+> Note: `voice_result` alias may return `status: "processing"` while STT, LLM, and TTS jobs complete in the background. Poll until the final status is `success`.
 
 ---
 
@@ -603,24 +647,21 @@ bench execute tap_ai.workers.tts_worker.start
 ### API Layer
 
 **`tap_ai/api/query.py`**
-- Text query entry point
+- Unified text + voice query entry point
 - Rate limiting check
-- Publishes to RabbitMQ `text_query_queue`
+- Publishes to RabbitMQ `text_query_queue` (text) or `audio_stt_queue` (voice)
 - Returns request_id for polling
 
 **`tap_ai/api/result.py`**
-- Polls for text query result
+- Unified result endpoint for text and voice
+- Supports short server-side waiting to reduce coarse flow wait-node dependence
 - Retrieves from Redis cache
 
 **`tap_ai/api/voice_query.py`**
-- Voice query entry point
-- Publishes to RabbitMQ `audio_stt_queue`
-- Returns request_id for polling
+- Backward-compatible wrapper for unified query endpoint
 
 **`tap_ai/api/voice_result.py`**
-- Polls voice results
-- Handles TTS generation on-demand
-- Returns audio URL when ready
+- Backward-compatible wrapper for unified result endpoint
 
 ### Services Layer
 
@@ -633,7 +674,7 @@ bench execute tap_ai.workers.tts_worker.start
 **`tap_ai/services/sql_answerer.py`**
 - Generates SQL from natural language
 - Builds intelligent schema for LLM
-- Executes queries against MariaDB
+- Executes queries against remote PostgreSQL
 - Returns structured data
 
 **`tap_ai/services/rag_answerer.py`**
