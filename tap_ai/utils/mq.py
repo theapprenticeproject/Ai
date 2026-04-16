@@ -29,10 +29,10 @@ def get_rabbitmq_connection():
     _thread_local.last_used = time.time()  
     return _thread_local.connection, _thread_local.channel  
   
-def publish_to_queue(queue_name: str, payload: dict):  
+def publish_to_queue(queue_name: str, payload: dict, retry=True):  
     """  
     Connects to RabbitMQ, ensures the queue exists, and publishes the payload.  
-    Uses persistent connection for better performance.  
+    Includes a self-healing retry mechanism for dropped cloud connections.
     """  
     try:  
         connection, channel = get_rabbitmq_connection()  
@@ -50,7 +50,21 @@ def publish_to_queue(queue_name: str, payload: dict):
             )  
         )  
           
-    except pika.exceptions.AMQPConnectionError as e:  
+    except (pika.exceptions.AMQPConnectionError, pika.exceptions.StreamLostError) as e: 
+        if retry:
+            # The connection was likely dropped by a firewall or idle timeout.
+            # Destroy the zombie connection from the thread local storage.
+            if hasattr(_thread_local, 'connection'):
+                try:
+                    _thread_local.connection.close()
+                except Exception:
+                    pass
+                delattr(_thread_local, 'connection')
+            
+            # Immediately try one more time with a fresh connection
+            return publish_to_queue(queue_name, payload, retry=False)
+
+        # If it fails twice, the queue is actually down
         frappe.log_error(f"RabbitMQ Connection Refused: {str(e)}", "RabbitMQ Error")  
         frappe.local.response["http_status_code"] = 503  
         frappe.throw("The AI service is currently unavailable. Please ensure the background queue is running.")  
@@ -58,7 +72,7 @@ def publish_to_queue(queue_name: str, payload: dict):
     except Exception as e:  
         frappe.log_error(f"Failed to publish to {queue_name}: {str(e)}", "RabbitMQ Error")  
         frappe.local.response["http_status_code"] = 500  
-        frappe.throw("An internal error occurred while queuing your request.")  
+        frappe.throw("An internal error occurred while queuing your request.")
   
 def close_connection():  
     """Close the RabbitMQ connection (call on app shutdown)"""  
