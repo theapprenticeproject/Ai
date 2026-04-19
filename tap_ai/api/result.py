@@ -66,6 +66,50 @@ def _canonical_status(raw_status: str | None) -> str:
     return "processing"
 
 
+def _empty_result(request_id: str, status: str = "failed", error: str | None = None) -> dict:
+    mode = "voice" if str(request_id or "").startswith("VREQ_") else "text"
+    return {
+        "request_id": request_id,
+        "mode": mode,
+        "status": status,
+        "raw_status": None,
+        "answer": None,
+        "answer_text": None,
+        "query": None,
+        "transcribed_text": None,
+        "audio_url": None,
+        "language": None,
+        "error": error,
+    }
+
+
+def _safe_load_cache_payload(cached) -> tuple[dict | None, str | None]:
+    if cached is None:
+        return None, "No cached payload found"
+
+    if isinstance(cached, dict):
+        return cached, None
+
+    if isinstance(cached, bytes):
+        cached = cached.decode("utf-8", errors="replace")
+
+    if not isinstance(cached, str):
+        return None, f"Unsupported cached payload type: {type(cached).__name__}"
+
+    if not cached.strip():
+        return None, "Cached payload is empty"
+
+    try:
+        data = json.loads(cached)
+    except Exception as exc:
+        return None, f"Invalid cached payload JSON: {exc}"
+
+    if not isinstance(data, dict):
+        return None, "Cached payload JSON is not an object"
+
+    return data, None
+
+
 def _normalize_result(data: dict, request_id: str) -> dict:
     """
     Returns a stable response contract for both text and voice.
@@ -111,11 +155,15 @@ def result(request_id: str, wait_seconds: int | None = None, poll_interval_ms: i
     - wait_seconds: 0-55, or omit for auto (text: 8s, voice: 25s)
     - poll_interval_ms: 100-2000, or omit for auto (text: 300ms, voice: 500ms)
     """
-    cached = frappe.cache().get(request_id)
-    if not cached:
-        frappe.throw(f"No such request_id: {request_id}")
+    request_id = (request_id or "").strip()
+    if not request_id:
+        return _empty_result(request_id, error="Missing request_id")
 
-    data = json.loads(cached)
+    cached = frappe.cache().get(request_id)
+    data, error = _safe_load_cache_payload(cached)
+    if error:
+        return _empty_result(request_id, error=f"No such request_id or unavailable state: {request_id}")
+
     out = _normalize_result(data, request_id)
 
     if out.get("status") != "processing":
@@ -138,10 +186,10 @@ def result(request_id: str, wait_seconds: int | None = None, poll_interval_ms: i
         time.sleep(min(poll_interval_ms / 1000.0, remaining))
 
         cached = frappe.cache().get(request_id)
-        if not cached:
-            frappe.throw(f"No such request_id: {request_id}")
+        data, error = _safe_load_cache_payload(cached)
+        if error:
+            return _empty_result(request_id, error=f"No such request_id or unavailable state: {request_id}")
 
-        data = json.loads(cached)
         out = _normalize_result(data, request_id)
         if out.get("status") != "processing":
             return out
