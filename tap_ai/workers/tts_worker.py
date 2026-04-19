@@ -6,6 +6,7 @@ import pika
 import os
 import uuid
 from openai import OpenAI
+from frappe.utils import get_url
 
 def get_openai_client():
     api_key = frappe.conf.get("openai_api_key")
@@ -55,16 +56,17 @@ def process_message(ch, method, properties, body):
             os.remove(output_path)
 
         # Final Success State
+        public_audio_url = get_url(file_doc.file_url)
         state_dict.update({
             "status": "success",
-            "audio_url": file_doc.file_url,
+            "audio_url": public_audio_url,
             "answer_text": answer,
             "transcribed_text": transcribed_text,
             "language": language
         })
         frappe.cache().set(request_id, json.dumps(state_dict))
         
-        print(f"[✓] {request_id} audio generated: {file_doc.file_url}")
+        print(f"[✓] {request_id} audio generated: {public_audio_url}")
 
     except Exception as e:
         print(f"[x] TTS failed for {request_id}: {str(e)}")
