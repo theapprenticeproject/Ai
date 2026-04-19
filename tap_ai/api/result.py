@@ -66,6 +66,14 @@ def _canonical_status(raw_status: str | None) -> str:
     return "processing"
 
 
+def _as_public_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    if str(url).startswith("http://") or str(url).startswith("https://"):
+        return url
+    return frappe.utils.get_url(url)
+
+
 def _empty_result(request_id: str, status: str = "failed", error: str | None = None) -> dict:
     mode = "voice" if str(request_id or "").startswith("VREQ_") else "text"
     return {
@@ -121,6 +129,8 @@ def _normalize_result(data: dict, request_id: str) -> dict:
     answer = data.get("answer") or data.get("answer_text")
     query = data.get("query") or data.get("transcribed_text")
 
+    audio_url = _as_public_url(data.get("audio_url"))
+
     out = {
         "request_id": request_id,
         "mode": mode,
@@ -130,7 +140,7 @@ def _normalize_result(data: dict, request_id: str) -> dict:
         "answer_text": answer,
         "query": query,
         "transcribed_text": data.get("transcribed_text"),
-        "audio_url": data.get("audio_url"),
+        "audio_url": audio_url,
         "language": data.get("language"),
         "error": data.get("error"),
     }
