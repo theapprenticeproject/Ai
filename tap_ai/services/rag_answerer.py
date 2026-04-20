@@ -11,6 +11,7 @@ DynamicConfig compatible
 
 import json
 import time
+import hashlib
 from typing import Dict, Any, List, Optional
 
 import frappe
@@ -20,6 +21,7 @@ from tap_ai.infra.config import get_config
 from tap_ai.services.pinecone_store import (
     search_auto_namespaces,
     get_db_columns_for_doctype,
+    embed_query_cached,
 )
 
 # ======================================================
@@ -52,7 +54,9 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
     if not history:
         return query
 
-    llm = _llm(temperature=0.0)
+    #  OPTIMIZATION: Use cached LLM invoke (Phase 1)
+    from tap_ai.services.router import llm_invoke_cached
+    
     formatted_history = "\n".join(
         f"{msg['role']}: {msg['content']}" for msg in history
     )
@@ -64,8 +68,11 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
     )
 
     try:
-        resp = llm.invoke([("system", REFINER_PROMPT), ("user", prompt)])
-        refined = getattr(resp, "content", query).strip()
+        refined = llm_invoke_cached(
+            [("system", REFINER_PROMPT), ("user", prompt)],
+            model="gpt-4o-mini",
+            temperature=0.0,
+        )
         print(f"> Refined Query: {refined}")
         return refined
     except Exception as e:
@@ -121,54 +128,181 @@ def _record_to_text(doctype: str, row: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _max_context_hits() -> int:
+    """Cap DB hydration to top-N vector hits to reduce latency."""
+    try:
+        return int(get_config("rag_max_context_hits") or 8)
+    except Exception:
+        return 8
+
+
+def _context_fields_for_doctype(doctype: str) -> List[str]:
+    """Fetch a compact field list for context hydration, with cache."""
+    cache_key = f"rag_context_fields:{doctype}"
+    cached = frappe.cache().get(cache_key)
+    if cached:
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8", errors="ignore")
+        try:
+            fields = json.loads(cached)
+            if isinstance(fields, list) and fields:
+                return fields
+        except Exception:
+            pass
+
+    columns = get_db_columns_for_doctype(doctype) or []
+    columns_set = set(columns)
+
+    preferred = [
+        "name", "title", "subject", "topic", "description", "content",
+        "instructions", "learning_objective", "evaluation_points", "rubric",
+        "objective", "summary", "course", "grade", "batch", "modified",
+    ]
+    selected = [f for f in preferred if f in columns_set]
+
+    # Keep at most 15 columns for context hydration; fallback to first columns.
+    if not selected:
+        selected = ["name"] + [c for c in columns if c != "name"][:14]
+
+    # Ensure unique, stable order.
+    seen = set()
+    final_fields = []
+    for f in selected:
+        if f not in seen:
+            seen.add(f)
+            final_fields.append(f)
+
+    frappe.cache().set(cache_key, json.dumps(final_fields), ex=86400)
+    return final_fields
+
+
 def _build_context_from_hits(
     hits: List[Dict[str, Any]],
     max_chars: int = 12000
 ) -> Dict[str, Any]:
+    """
+     OPTIMIZATION: Batch DB queries by doctype (Phase 2)
+    Instead of: 15 hits = 15 DB queries
+    Now does: 2-3 doctypes = 2-3 batch queries
+    """
     context_chunks: List[str] = []
     sources: List[Dict[str, Any]] = []
     used_chars = 0
+    metadata_hits_used = 0
+    db_queries = 0
 
-    for hit in hits:
+    # Hydrate context only for top-N hits; deeper hits are often low signal.
+    top_hits = (hits or [])[: _max_context_hits()]
+    
+    # Group hits by doctype
+    hits_by_doctype: Dict[str, List] = {}
+    for hit in top_hits:
         meta = hit.get("metadata") or {}
         doctype = meta.get("doctype")
         record_ids = meta.get("record_ids") or []
-
+        
         if not doctype or not record_ids:
             continue
+        
+        if doctype not in hits_by_doctype:
+            hits_by_doctype[doctype] = []
+        
+        hits_by_doctype[doctype].append((hit, record_ids))
+    
+    # Fast path: if Pinecone metadata already carries a preview chunk, avoid DB hit.
+    pending_hits_by_doctype: Dict[str, List] = {}
+    for doctype, hits_group in hits_by_doctype.items():
+        for hit, record_ids in hits_group:
+            if used_chars >= max_chars:
+                break
 
-        try:
-            fields = get_db_columns_for_doctype(doctype)
-            # Use remote database instead of local frappe.get_all
-            from tap_ai.utils.remote_db import get_remote_all
-            rows = get_remote_all(
-                doctype,
-                fields=fields,
-                filters={"name": ["in", record_ids]},
-            )
-
-            for row in rows:
-                chunk = _record_to_text(doctype, row)
+            meta = hit.get("metadata") or {}
+            preview = (meta.get("context_preview") or "").strip()
+            if preview:
+                chunk = f"DocType: {doctype}\nID: {record_ids[0]}\n{preview}"
                 if used_chars + len(chunk) > max_chars:
-                    break
-
+                    continue
                 context_chunks.append(chunk)
+                metadata_hits_used += 1
                 sources.append({
                     "doctype": doctype,
-                    "id": row.get("name"),
+                    "id": record_ids[0],
                     "score": hit.get("score"),
                 })
                 used_chars += len(chunk)
+                continue
 
-        except Exception as e:
-            frappe.log_error(f"Context build failed for {doctype}: {e}")
+            pending_hits_by_doctype.setdefault(doctype, []).append((hit, record_ids))
 
+    # Single batch query per doctype for misses
+    from tap_ai.utils.remote_db import get_remote_all
+    
+    for doctype, hits_group in pending_hits_by_doctype.items():
         if used_chars >= max_chars:
             break
+        
+        try:
+            # Collect all unique record IDs for this doctype
+            all_record_ids = []
+            for hit, record_ids in hits_group:
+                all_record_ids.extend(record_ids)
+            
+            all_record_ids = list(set(all_record_ids))  # Deduplicate
+            
+            if not all_record_ids:
+                continue
+            
+            # ✅ ONE query per doctype instead of ONE per hit
+            fields = _context_fields_for_doctype(doctype)
+            rows = get_remote_all(
+                doctype,
+                fields=fields,
+                filters={"name": ["in", all_record_ids]},
+            )
+            db_queries += 1
+            
+            # Map rows by name for quick lookup
+            rows_dict = {row.get("name"): row for row in rows}
+            
+            # Build context from batched results
+            for hit, record_ids in hits_group:
+                if used_chars >= max_chars:
+                    break
+                
+                for record_id in record_ids:
+                    if used_chars >= max_chars:
+                        break
+                    
+                    if record_id not in rows_dict:
+                        continue
+                    
+                    row = rows_dict[record_id]
+                    chunk = _record_to_text(doctype, row)
+                    
+                    if used_chars + len(chunk) > max_chars:
+                        break
+                    
+                    context_chunks.append(chunk)
+                    sources.append({
+                        "doctype": doctype,
+                        "id": row.get("name"),
+                        "score": hit.get("score"),
+                    })
+                    used_chars += len(chunk)
+        
+        except Exception as e:
+            frappe.log_error(f"Context build failed for {doctype}: {e}")
 
     return {
         "context_text": "\n\n---\n\n".join(context_chunks),
         "sources": sources,
+        "stats": {
+            "total_hits_in": len(hits or []),
+            "top_hits_used": len(top_hits),
+            "metadata_hits_used": metadata_hits_used,
+            "db_queries": db_queries,
+            "context_chars": used_chars,
+        },
     }
 
 
@@ -182,7 +316,11 @@ def _synthesize_answer(
     user_profile: Optional[Dict] = None,
     history: Optional[List[Dict[str, str]]] = None
 ) -> str:
-    llm = _llm()
+    """
+     OPTIMIZATION: Use cached LLM invoke (Phase 1)
+    """
+    from tap_ai.services.router import llm_invoke_cached
+    
     history = history or []
 
     if user_profile and user_profile.get("name"):
@@ -196,16 +334,18 @@ Use friendly, age-appropriate language.
     else:
         system_prompt = """You are a helpful educational AI assistant."""
 
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history[-3:])
-    messages.append({
-        "role": "user",
-        "content": f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"
-    })
+    messages = [["system", system_prompt]]
+    for msg in history[-3:]:
+        messages.append([msg["role"], msg["content"]])
+    messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])
 
     try:
-        resp = llm.invoke(messages)
-        return getattr(resp, "content", "I couldn't generate an answer.").strip()
+        answer = llm_invoke_cached(
+            messages,
+            model="gpt-4o-mini",
+            temperature=0.2,  # Slightly higher for variety in answers
+        )
+        return answer.strip() if answer else "I couldn't generate an answer."
     except Exception as e:
         frappe.log_error(f"RAG synthesis failed: {e}")
         return "There was an error while generating the answer."
@@ -217,7 +357,7 @@ Use friendly, age-appropriate language.
 
 def answer_from_pinecone(
     query: str,
-    k: int = 15,
+    k: int = 8,
     route_top_n: int = 5,
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
@@ -226,57 +366,81 @@ def answer_from_pinecone(
 
     chat_history = chat_history or []
     start = time.time()
+    timings_ms: Dict[str, int] = {}
+
+    def _stamp(stage_name: str, t0: float):
+        timings_ms[stage_name] = int((time.time() - t0) * 1000)
 
     print("> Starting Vector RAG process...")
 
     # 1. Refine query
+    t_refine = time.time()
     refined_query = _refine_query_with_history(query, chat_history)
+    _stamp("refine_query", t_refine)
 
     # 2. Build metadata filters
+    t_filters = time.time()
     metadata_filter = _build_metadata_filter(user_profile, content_details)
+    _stamp("build_filters", t_filters)
 
     # 3. Pinecone search
+    t_search = time.time()
     search_result = search_auto_namespaces(
         q=refined_query,
         k=k,
         route_top_n=route_top_n,
         filters=metadata_filter,
     )
+    _stamp("vector_search", t_search)
 
     matches = search_result.get("matches") or []
     routed_doctypes = search_result.get("routed_doctypes") or []
 
     if not matches:
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
         return {
             "question": query,
             "answer": "I couldn't find relevant information for your question.",
             "routed_doctypes": routed_doctypes,
             "results_count": 0,
             "search_time": round(time.time() - start, 2),
+            "timings_ms": timings_ms,
         }
 
     # 4. Build context
+    t_context = time.time()
     ctx = _build_context_from_hits(matches)
+    _stamp("build_context", t_context)
     context_text = ctx["context_text"]
 
     if not context_text.strip():
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
         return {
             "question": query,
             "answer": "I found references but not enough details to answer confidently.",
             "routed_doctypes": routed_doctypes,
             "results_count": len(matches),
             "search_time": round(time.time() - start, 2),
+            "timings_ms": timings_ms,
+            "context_stats": ctx.get("stats") or {},
         }
 
     # 5. Synthesize answer
+    t_synth = time.time()
     answer = _synthesize_answer(
         query=query,
         context_text=context_text,
         user_profile=user_profile,
         history=chat_history,
     )
+    _stamp("synthesize_answer", t_synth)
 
     elapsed = round(time.time() - start, 2)
+    timings_ms["total"] = int((time.time() - start) * 1000)
+    print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
+    print(f"> RAG context stats: {json.dumps(ctx.get('stats') or {})}")
 
     return {
         "question": query,
@@ -289,6 +453,8 @@ def answer_from_pinecone(
             "refined_query": refined_query,
             "filters_used": metadata_filter,
             "sources": ctx["sources"],
+            "timings_ms": timings_ms,
+            "context_stats": ctx.get("stats") or {},
         },
     }
 
