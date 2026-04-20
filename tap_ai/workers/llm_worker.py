@@ -106,7 +106,10 @@ def process_message(ch, method, properties, body):
 
 def start():
     """Initializes RabbitMQ connection and starts consuming."""
+    import os
+    
     rabbitmq_url = frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
+    worker_concurrency = int(os.environ.get("TAP_AI_WORKER_CONCURRENCY", "8"))
     
     try:
         parameters = pika.URLParameters(rabbitmq_url)
@@ -114,7 +117,8 @@ def start():
         channel = connection.channel()
 
         channel.queue_declare(queue="text_query_queue", durable=True)
-        channel.basic_qos(prefetch_count=1) # Process one message at a time
+        #  OPTIMIZATION: Increase prefetch_count for parallel processing (was 1, now 8)
+        channel.basic_qos(prefetch_count=worker_concurrency)
         channel.basic_consume(queue="text_query_queue", on_message_callback=process_message)
 
         print(" [*] LLM Worker running. Waiting for messages. (CTRL+C to exit)")
