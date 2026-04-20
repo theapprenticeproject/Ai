@@ -1,8 +1,12 @@
 import frappe
 import json
 import uuid
+import hashlib
 from tap_ai.services.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue
+
+# 🚀 OPTIMIZATION: Request deduplication (Phase 3)
+DEDUP_WINDOW_SEC = 3  # 3-second window for dedup
 
 
 def _extract_api_key() -> str | None:
@@ -21,6 +25,28 @@ def _resolve_user_id(data: dict) -> str:
     if not user_id or user_id == "Guest":
         user_id = frappe.session.user
     return user_id
+
+
+def _get_or_create_request(q: str, user_id: str, window_sec: int = DEDUP_WINDOW_SEC) -> dict:
+    """
+    🚀 OPTIMIZATION: Request deduplication (Phase 3)
+    Return existing request if identical query in progress, else create new.
+    """
+    dedup_key = f"dedup_{user_id}:{hashlib.md5(q.encode()).hexdigest()}"
+    cached_req = frappe.cache().get(dedup_key)
+    
+    if cached_req:
+        try:
+            existing = json.loads(cached_req)
+            print(f"✓ Request dedup hit: reusing {existing['request_id']}")
+            return {"request_id": existing["request_id"], "deduplicated": True}
+        except Exception:
+            pass
+    
+    # Create new request
+    request_id = f"REQ_{uuid.uuid4().hex[:8]}"
+    frappe.cache().set(dedup_key, json.dumps({"request_id": request_id}), ex=window_sec)
+    return {"request_id": request_id, "deduplicated": False}
 
 @frappe.whitelist(methods=["POST"], allow_guest=True)
 def query():
@@ -67,7 +93,16 @@ def query():
         )
 
     request_prefix = "VREQ" if is_voice else "REQ"
-    request_id = f"{request_prefix}_{uuid.uuid4().hex[:8]}"
+    
+    # 🚀 OPTIMIZATION: Request deduplication for text queries (Phase 3)
+    if not is_voice and q:
+        dedup_result = _get_or_create_request(q, user_id)
+        request_id = dedup_result["request_id"]
+        if dedup_result.get("deduplicated"):
+            # Return existing request ID immediately
+            return {"request_id": request_id, "deduplicated": True}
+    else:
+        request_id = f"{request_prefix}_{uuid.uuid4().hex[:8]}"
 
     state = {
         "status": "pending",

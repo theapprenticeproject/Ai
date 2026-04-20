@@ -12,6 +12,8 @@ Rich metadata
 
 import json
 import uuid
+import hashlib
+import time
 from typing import Dict, Any, List, Optional
 
 import frappe
@@ -21,16 +23,53 @@ from tap_ai.infra.config import get_config
 from tap_ai.services.sql_answerer import answer_from_sql
 from tap_ai.services.rag_answerer import answer_from_pinecone
 
+#  OPTIMIZATION: LLM output caching (Phase 1)
+LLM_CACHE_TTL = 3600  # 1 hour
+
+def _llm_cache_key(prompt: str, model: str) -> str:
+    """Generate cache key for LLM prompt."""
+    return f"llm_cache:{model}:{hashlib.sha256(prompt.encode()).hexdigest()}"
+
+def llm_invoke_cached(
+    messages: list,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.0,
+    cache_ttl: int = LLM_CACHE_TTL,
+) -> str:
+    """LLM invoke with caching."""
+    normalized_messages = [(str(m[0]), str(m[1])) for m in messages]
+
+    # Create cache key from all messages
+    prompt_text = "\n".join([f"{m[0]}: {m[1]}" for m in normalized_messages])
+    cache_key = _llm_cache_key(prompt_text, model)
+    
+    # Check cache
+    cached = frappe.cache().get(cache_key)
+    if cached:
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8", errors="ignore")
+        print(f"✓ LLM cache hit: {cache_key[:40]}...")
+        return cached
+    
+    # Call LLM
+    llm = _llm(model=model, temperature=temperature)
+    resp = llm.invoke(normalized_messages)
+    content = getattr(resp, "content", "").strip()
+    
+    # Cache result
+    frappe.cache().set(cache_key, content, ex=cache_ttl)
+    return content
+
 
 # ======================================================
 # LLM INITIALIZATION
 # ======================================================
 
-def _llm() -> ChatOpenAI:  
+def _llm(model: str = "gpt-4o-mini", temperature: float = 0.0) -> ChatOpenAI:
     from tap_ai.infra.llm_client import LLMClient  
     return LLMClient.get_client(  
-        model=get_config("primary_llm_model") or "gpt-4o-mini",  
-        temperature=0.0  
+        model=model or get_config("primary_llm_model") or "gpt-4o-mini",
+        temperature=temperature,
     )  
 
 
@@ -53,8 +92,7 @@ Return ONLY JSON:
 
 
 def choose_tool(query: str, user_context: Optional[str] = None) -> str:
-    llm = _llm()
-
+    #  OPTIMIZATION: Use cached LLM invoke (Phase 1)
     prompt = f"USER QUESTION:\n{query}"
     if user_context:
         prompt = f"USER CONTEXT:\n{user_context}\n\n{prompt}"
@@ -62,8 +100,11 @@ def choose_tool(query: str, user_context: Optional[str] = None) -> str:
     prompt += "\n\nWhich tool should be used?"
 
     try:
-        resp = llm.invoke([("system", ROUTER_PROMPT), ("user", prompt)])
-        content = getattr(resp, "content", "").strip()
+        content = llm_invoke_cached(
+            [("system", ROUTER_PROMPT), ("user", prompt)],
+            model="gpt-4o-mini",
+            temperature=0.0,
+        )
         content = content.replace("```json", "").replace("```", "").strip()
         data = json.loads(content)
         tool = data.get("tool")
@@ -115,7 +156,8 @@ def _with_meta(
     res: dict,
     original_query: str,
     primary: str,
-    fallback_used: bool
+    fallback_used: bool,
+    timings_ms: Optional[Dict[str, int]] = None,
 ) -> dict:
     res.setdefault("metadata", {})
     res["metadata"].update({
@@ -123,6 +165,9 @@ def _with_meta(
         "primary_engine": primary,
         "fallback_used": fallback_used,
     })
+
+    if timings_ms:
+        res["metadata"]["router_timings_ms"] = timings_ms
 
     if "routed_doctypes" in res:
         res["metadata"]["doctypes_used"] = res["routed_doctypes"]
@@ -143,6 +188,11 @@ def process_query(
 ) -> dict:
 
     chat_history = chat_history or []
+    t_total = time.time()
+    timings_ms: Dict[str, int] = {}
+
+    def _stamp(stage_name: str, t0: float):
+        timings_ms[stage_name] = int((time.time() - t0) * 1000)
 
     # -------- Build user context string (for routing) --------
     user_context = None
@@ -163,7 +213,9 @@ def process_query(
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
     # -------- Choose tool --------
+    t_choose = time.time()
     primary_tool = choose_tool(query, user_context)
+    _stamp("choose_tool", t_choose)
     print(f"> Selected Primary Tool: {primary_tool}")
 
     fallback_used = False
@@ -171,35 +223,43 @@ def process_query(
 
     # -------- Execute --------
     if primary_tool == "text_to_sql":
+        t_sql = time.time()
         result = answer_from_sql(
             query,
             user_profile=user_profile,
             content_details=content_details,
             chat_history=chat_history
         )
+        _stamp("text_to_sql", t_sql)
 
         if _is_failure(result):
             print("> SQL failure detected → Falling back to RAG")
             fallback_used = True
             interim = "Searching, please wait a few more seconds..."
+            t_fallback = time.time()
             result = answer_from_pinecone(
                 query,
                 user_profile=user_profile,
                 content_details=content_details,
                 chat_history=chat_history
             )
+            _stamp("vector_search_fallback", t_fallback)
             result["interim_message"] = interim
 
     else:
         primary_tool = "vector_search"
+        t_vector = time.time()
         result = answer_from_pinecone(
             query,
             user_profile=user_profile,
             content_details=content_details,
             chat_history=chat_history
         )
+        _stamp("vector_search", t_vector)
 
-    return _with_meta(result, query, primary_tool, fallback_used)
+    timings_ms["total"] = int((time.time() - t_total) * 1000)
+    print(f"> Router timings (ms): {json.dumps(timings_ms)}")
+    return _with_meta(result, query, primary_tool, fallback_used, timings_ms=timings_ms)
 
 
 # ======================================================
@@ -391,8 +451,10 @@ def cli(q: str, user_id: str = "default_user"):
 
     Examples:
 
+    bench execute tap_ai.services.router.cli --kwargs "{'q':'what is budget?','user_id':'user123'}"
+
     Turn 1:
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos with basic difficulty','user_id':'user123'}"
+    bench execute tap_ai.services.router.cli --kwargs "{'q':'what are the 4 evaluation points for the Zentangle arts assignment?','user_id':'user123'}"
 
     Turn 2:
     bench execute tap_ai.services.router.cli --kwargs "{'q':'summarize the first one','user_id':'user123'}"
