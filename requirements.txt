@@ -43,3 +43,6 @@ httpx>=0.27.2
 
 #Pinecone
 pinecone
+
+# ClickHouse
+clickhouse-connect
