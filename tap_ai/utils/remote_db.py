@@ -1,40 +1,36 @@
 # tap_ai/utils/remote_db.py
 """
-Remote Database Connection Utilities with Connection Pooling
+Remote Database Connection Utilities
 
 Provides connection management and query execution for the remote PostgreSQL database.
 Used by SQL answerer and RAG answerer for data fetching.
-
- OPTIMIZATION: Connection pooling for 3-5x throughput (Phase 2)
 """
 
 import psycopg2
-import psycopg2.pool
 from psycopg2.extras import RealDictCursor
-from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
 import frappe
 
 
-class RemoteDBConnectionPool:
-    """ Connection pool manager for remote PostgreSQL database (Phase 2)"""
+class RemoteDBConnection:
+    """Singleton connection manager for remote PostgreSQL database"""
 
     _instance = None
-    _pool = None
+    _connection = None
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def get_pool(self):
-        """Get or create connection pool"""
-        if self._pool is None:
-            self._pool = self._create_pool()
-        return self._pool
+    def get_connection(self):
+        """Get or create database connection"""
+        if self._connection is None or self._connection.closed:
+            self._connection = self._create_connection()
+        return self._connection
 
-    def _create_pool(self):
-        """Create connection pool"""
+    def _create_connection(self):
+        """Create new database connection"""
         try:
             host = frappe.conf.get("remote_db_host", "127.0.0.1")
             port = frappe.conf.get("remote_db_port", 5433)
@@ -45,79 +41,43 @@ class RemoteDBConnectionPool:
             if not all([host, port, db_name, user, password]):
                 raise ValueError("Missing remote database configuration")
 
-            # Pool size: min=5, max=20 (tunable via config)
-            min_conn = int(frappe.conf.get("remote_db_pool_min", 5))
-            max_conn = int(frappe.conf.get("remote_db_pool_max", 20))
-
-            pool = psycopg2.pool.SimpleConnectionPool(
-                min_conn,
-                max_conn,
+            conn = psycopg2.connect(
                 host=host,
                 port=port,
                 dbname=db_name,
                 user=user,
-                password=password,
-                connect_timeout=10,
+                password=password
             )
-
-            print(f"✅ Remote DB pool created: {min_conn}-{max_conn} connections")
-            return pool
+            print("✅ Remote database connection established")
+            return conn
 
         except Exception as e:
+            # Handle case where frappe.log_error might not be available
             try:
-                frappe.log_error(f"Remote database pool creation failed: {e}")
+                frappe.log_error(f"Remote database connection failed: {e}")
             except AttributeError:
-                print(f"Remote database pool creation failed: {e}")
+                print(f"Remote database connection failed: {e}")
             raise
 
-    def close_all(self):
-        """Close all connections in pool"""
-        if self._pool:
-            self._pool.closeall()
-            self._pool = None
-
-    @contextmanager
-    def get_connection(self, timeout: int = 10):
-        """Context manager for connection retrieval"""
-        conn = None
-        try:
-            pool = self.get_pool()
-            conn = pool.getconn()
-            conn.set_isolation_level(0)  # Autocommit mode
-            yield conn
-        except psycopg2.pool.PoolError as e:
-            try:
-                frappe.log_error(f"Connection pool exhausted: {e}")
-            except AttributeError:
-                print(f"Connection pool exhausted: {e}")
-            raise Exception("Database connection limit exceeded. Try again later.")
-        except Exception as e:
-            if conn:
-                try:
-                    pool.putconn(conn, close=True)
-                except:
-                    pass
-            raise
-        finally:
-            if conn:
-                try:
-                    pool.putconn(conn)
-                except:
-                    pass
+    def close(self):
+        """Close database connection"""
+        if self._connection and not self._connection.closed:
+            self._connection.close()
+            self._connection = None
 
 
-# Global pool instance
-_remote_db_pool = RemoteDBConnectionPool()
+# Global connection instance
+_remote_db = RemoteDBConnection()
 
 
 def get_remote_connection():
-    """Get remote database connection from pool"""
-    return _remote_db_pool.get_pool().getconn()
+    """Get remote database connection"""
+    return _remote_db.get_connection()
 
 
 def execute_remote_query(sql: str, params: Optional[tuple] = None) -> List[Dict[str, Any]]:
     """
-    Execute SQL query on remote database with connection pooling
+    Execute SQL query on remote database
 
     Args:
         sql: SQL query string
@@ -127,18 +87,17 @@ def execute_remote_query(sql: str, params: Optional[tuple] = None) -> List[Dict[
         List of result dictionaries
     """
     try:
-        with _remote_db_pool.get_connection() as conn:
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+        conn = get_remote_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-            try:
-                if params is None or len(params) == 0:
-                    cursor.execute(sql)
-                else:
-                    cursor.execute(sql, params)
-                results = cursor.fetchall()
-                return [dict(row) for row in results]
-            finally:
-                cursor.close()
+        if params is None or len(params) == 0:
+            cursor.execute(sql)
+        else:
+            cursor.execute(sql, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        return [dict(row) for row in results]
 
     except Exception as e:
         # Handle case where frappe.log_error might not be available
@@ -225,5 +184,5 @@ def get_remote_table_columns(table: str) -> List[str]:
 
 
 def close_remote_connection():
-    """Close all remote database connections"""
-    _remote_db_pool.close_all()
+    """Close remote database connection"""
+    _remote_db.close()

@@ -5,7 +5,7 @@ import hashlib
 from tap_ai.services.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue
 
-# 🚀 OPTIMIZATION: Request deduplication (Phase 3)
+#  OPTIMIZATION: Request deduplication 
 DEDUP_WINDOW_SEC = 3  # 3-second window for dedup
 
 
@@ -29,7 +29,7 @@ def _resolve_user_id(data: dict) -> str:
 
 def _get_or_create_request(q: str, user_id: str, window_sec: int = DEDUP_WINDOW_SEC) -> dict:
     """
-    🚀 OPTIMIZATION: Request deduplication (Phase 3)
+     OPTIMIZATION: Request deduplication 
     Return existing request if identical query in progress, else create new.
     """
     dedup_key = f"dedup_{user_id}:{hashlib.md5(q.encode()).hexdigest()}"
@@ -94,7 +94,7 @@ def query():
 
     request_prefix = "VREQ" if is_voice else "REQ"
     
-    # 🚀 OPTIMIZATION: Request deduplication for text queries (Phase 3)
+    #  OPTIMIZATION: Request deduplication for text queries
     if not is_voice and q:
         dedup_result = _get_or_create_request(q, user_id)
         request_id = dedup_result["request_id"]
