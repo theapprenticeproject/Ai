@@ -44,7 +44,7 @@ def process_message(ch, method, properties, body):
         chat_history = _get_history_from_cache(user_id, session_id=session_id)
 
         # 3. Run the Dual-Engine Router logic
-        out = process_query(query=query, chat_history=chat_history)
+        out = process_query(query=query, chat_history=chat_history, voice_mode=is_voice)
         answer = out.get("answer", "")
 
         # 4. Update and save history
@@ -60,6 +60,13 @@ def process_message(ch, method, properties, body):
 
         # 5. Routing Logic (Voice vs Text)
         if is_voice:
+            metadata = out.get("metadata", {}) or {}
+            if state_dict.get("metadata"):
+                existing_metadata = state_dict.get("metadata") or {}
+                existing_timings = existing_metadata.get("timings_ms") or {}
+                out_timings = metadata.get("timings_ms") or {}
+                metadata["timings_ms"] = {**existing_timings, **out_timings}
+
             if _tts_enabled_for_voice():
                 # Update state so the frontend knows text is done, audio is next.
                 state_dict.update({
@@ -68,6 +75,7 @@ def process_message(ch, method, properties, body):
                     "language": language,
                     "transcribed_text": query,
                     "session_id": session_id,
+                    "metadata": metadata,
                 })
                 frappe.cache().set(request_id, json.dumps(state_dict))
 
@@ -94,7 +102,7 @@ def process_message(ch, method, properties, body):
                     "user_id": user_id,
                     "session_id": session_id,
                     "history": chat_history[-10:],
-                    "metadata": out.get("metadata", {}),
+                    "metadata": metadata,
                 })
                 state_dict.setdefault("metadata", {})
                 state_dict["metadata"]["tts_skipped"] = True
@@ -103,6 +111,8 @@ def process_message(ch, method, properties, body):
 
         else:
             # Standard Text Query - Finish and save to Redis
+            metadata = out.get("metadata", {})
+
             state_dict.update({
                 "status": "success",
                 "answer": answer,
@@ -110,7 +120,7 @@ def process_message(ch, method, properties, body):
                 "user_id": user_id,
                 "session_id": session_id,
                 "history": chat_history[-10:],
-                "metadata": out.get("metadata", {})
+                "metadata": metadata,
             })
             frappe.cache().set(request_id, json.dumps(state_dict))
             print(f"[✓] Task {request_id} completed successfully.")
