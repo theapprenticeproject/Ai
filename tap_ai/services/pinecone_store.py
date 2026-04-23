@@ -317,7 +317,7 @@ def upsert_doctype(
                     "record_ids": record_ids,
                     "count": len(group),
                     # Store a compact preview to avoid DB hydration at query time when possible.
-                    "context_preview": text[:1200],
+                    "context_preview": text[:25000],
                 }
 
                 # Ensure ID is strictly ASCII for Pinecone
@@ -389,7 +389,7 @@ def upsert_all(
 
 def search_auto_namespaces(  
     q: str,  
-    k: int = 8,  
+    k: int = 6,  
     route_top_n: int = 4,  
     filters: Optional[Dict[str, Any]] = None,  
     use_parallel: bool = True,
@@ -542,7 +542,7 @@ def cli_upsert_all(
     print(f"\n✅ Done. Processed {total} DocTypes.\n", flush=True)
     return out
 
-def cli_search_auto(q: str, k: int = 8, route_top_n: int = 4):
+def cli_search_auto(q: str, k: int = 6, route_top_n: int = 4):
     out = search_auto_namespaces(q=q, k=k, route_top_n=route_top_n)
     print(frappe.as_json(out, indent=2))
     return out

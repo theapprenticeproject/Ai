@@ -11,7 +11,6 @@ DynamicConfig compatible
 
 import json
 import time
-import hashlib
 from typing import Dict, Any, List, Optional
 
 import frappe
@@ -50,15 +49,66 @@ REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the f
 Return ONLY the refined question.
 """
 
-def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:
+_FOLLOW_UP_MARKERS = (
+    "it", "this", "that", "these", "those", "they", "them", "he", "she",
+    "first one", "second one", "third one", "the above", "previous", "earlier",
+    "same", "that one", "explain more", "summarize that", "what about", "how about",
+)
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _should_refine_query(query: str, history: List[Dict[str, str]]) -> bool:
+    """Refine only likely follow-up queries; skip standalone questions to save ~1-2s."""
     if not history:
+        return False
+
+    force_refine = str(get_config("rag_force_query_refine") or "").strip().lower()
+    if force_refine in ("1", "true", "yes", "on"):
+        return True
+
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+
+    if any(marker in q for marker in _FOLLOW_UP_MARKERS):
+        return True
+
+    if q.startswith(("and ", "then ", "also ", "so ")):
+        return True
+
+    # Standalone definition/factual queries usually do not need refinement.
+    return False
+
+def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:
+    if not _should_refine_query(query, history):
+        return query
+
+    history_turns = max(1, _to_int(get_config("rag_refine_history_turns") or 2, 2))
+    max_chars_per_msg = max(80, _to_int(get_config("rag_refine_message_chars") or 240, 240))
+    recent_history = history[-history_turns:]
+
+    if not recent_history:
         return query
 
     #  OPTIMIZATION: Use cached LLM invoke (Phase 1)
     from tap_ai.services.router import llm_invoke_cached
     
     formatted_history = "\n".join(
-        f"{msg['role']}: {msg['content']}" for msg in history
+        f"{msg.get('role', 'user')}: {(msg.get('content') or '')[:max_chars_per_msg]}"
+        for msg in recent_history
     )
 
     prompt = (
@@ -72,6 +122,7 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
             [("system", REFINER_PROMPT), ("user", prompt)],
             model="gpt-4o-mini",
             temperature=0.0,
+            max_tokens=120,
         )
         print(f"> Refined Query: {refined}")
         return refined
@@ -131,9 +182,9 @@ def _record_to_text(doctype: str, row: Dict[str, Any]) -> str:
 def _max_context_hits() -> int:
     """Cap DB hydration to top-N vector hits to reduce latency."""
     try:
-        return int(get_config("rag_max_context_hits") or 8)
+        return int(get_config("rag_max_context_hits") or 6)
     except Exception:
-        return 8
+        return 6
 
 
 def _context_fields_for_doctype(doctype: str) -> List[str]:
@@ -306,6 +357,11 @@ def _build_context_from_hits(
     }
 
 
+def _max_context_chars() -> int:
+    """Bound synthesis context size to reduce token latency."""
+    return max(1200, _to_int(get_config("rag_max_context_chars") or 6000, 6000))
+
+
 # ======================================================
 # ANSWER SYNTHESIS
 # ======================================================
@@ -322,6 +378,10 @@ def _synthesize_answer(
     from tap_ai.services.router import llm_invoke_cached
     
     history = history or []
+    synthesis_history_turns = max(0, _to_int(get_config("rag_synthesis_history_turns") or 1, 1))
+    synthesis_temperature = _to_float(get_config("rag_synthesis_temperature") or 0.0, 0.0)
+    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 500, 500))
+    synthesis_model = get_config("rag_synthesis_model") or "gpt-4o-mini"
 
     if user_profile and user_profile.get("name"):
         system_prompt = f"""You are a helpful educational AI assistant.
@@ -335,15 +395,16 @@ Use friendly, age-appropriate language.
         system_prompt = """You are a helpful educational AI assistant."""
 
     messages = [["system", system_prompt]]
-    for msg in history[-3:]:
+    for msg in history[-synthesis_history_turns:]:
         messages.append([msg["role"], msg["content"]])
     messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])
 
     try:
         answer = llm_invoke_cached(
             messages,
-            model="gpt-4o-mini",
-            temperature=0.2,  # Slightly higher for variety in answers
+            model=synthesis_model,
+            temperature=synthesis_temperature,
+            max_tokens=synthesis_max_tokens,
         )
         return answer.strip() if answer else "I couldn't generate an answer."
     except Exception as e:
@@ -357,7 +418,7 @@ Use friendly, age-appropriate language.
 
 def answer_from_pinecone(
     query: str,
-    k: int = 8,
+    k: int = 6,
     route_top_n: int = 5,
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
@@ -410,7 +471,7 @@ def answer_from_pinecone(
 
     # 4. Build context
     t_context = time.time()
-    ctx = _build_context_from_hits(matches)
+    ctx = _build_context_from_hits(matches, max_chars=_max_context_chars())
     _stamp("build_context", t_context)
     context_text = ctx["context_text"]
 
@@ -461,7 +522,7 @@ def answer_from_pinecone(
 
 
 # -------- Bench CLI --------
-def cli(q: str, k: int = 8, route_top_n: int = 4):
+def cli(q: str, k: int = 6, route_top_n: int = 4):
     """
     Bench command to test the RAG pipeline.
 

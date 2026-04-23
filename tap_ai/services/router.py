@@ -29,11 +29,16 @@ from tap_ai.services.direct_answerer import answer_direct
 # LLM INITIALIZATION
 # ======================================================
 
-def _llm() -> ChatOpenAI:  
+def _llm(
+    model: Optional[str] = None,
+    temperature: float = 0.0,
+    max_tokens: int = 1500,
+) -> ChatOpenAI:
     from tap_ai.infra.llm_client import LLMClient  
     return LLMClient.get_client(  
-        model=get_config("primary_llm_model") or "gpt-4o-mini",  
-        temperature=0.0  
+        model=model or (get_config("primary_llm_model") or "gpt-4o-mini"),
+        temperature=temperature,
+        max_tokens=max_tokens,
     )  
 
 
@@ -42,6 +47,7 @@ def llm_invoke_cached(
     model: str = "gpt-4o-mini",
     temperature: float = 0.0,
     cache_ttl: int = 3600,
+    max_tokens: int = 700,
 ) -> str:
     """Invoke LLM with Redis caching; falls back to live invoke on cache issues."""
     try:
@@ -62,7 +68,7 @@ def llm_invoke_cached(
     except Exception:
         cache_key = None
 
-    llm = _llm()
+    llm = _llm(model=model, temperature=temperature, max_tokens=max_tokens)
     start = time.time()
     resp = llm.invoke(messages)
     content = getattr(resp, "content", "")
