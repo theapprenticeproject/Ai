@@ -182,9 +182,19 @@ def _record_to_text(doctype: str, row: Dict[str, Any]) -> str:
 def _max_context_hits() -> int:
     """Cap DB hydration to top-N vector hits to reduce latency."""
     try:
-        return int(get_config("rag_max_context_hits") or 6)
+        configured = int(get_config("rag_max_context_hits") or 6)
+        return max(1, min(configured, 6))
     except Exception:
         return 6
+
+
+def _effective_k(k: int) -> int:
+    """Hard-limit top-k to 6 for predictable latency."""
+    try:
+        parsed = int(k)
+    except Exception:
+        parsed = 6
+    return max(1, min(parsed, 6))
 
 
 def _context_fields_for_doctype(doctype: str) -> List[str]:
@@ -434,6 +444,8 @@ def answer_from_pinecone(
 
     print("> Starting Vector RAG process...")
 
+    effective_k = _effective_k(k)
+
     # 1. Refine query
     t_refine = time.time()
     refined_query = _refine_query_with_history(query, chat_history)
@@ -448,7 +460,7 @@ def answer_from_pinecone(
     t_search = time.time()
     search_result = search_auto_namespaces(
         q=refined_query,
-        k=k,
+        k=effective_k,
         route_top_n=route_top_n,
         filters=metadata_filter,
     )
@@ -513,6 +525,8 @@ def answer_from_pinecone(
         "metadata": {
             "refined_query": refined_query,
             "filters_used": metadata_filter,
+            "effective_k": effective_k,
+            "effective_context_hits_cap": _max_context_hits(),
             "sources": ctx["sources"],
             "timings_ms": timings_ms,
             "context_stats": ctx.get("stats") or {},

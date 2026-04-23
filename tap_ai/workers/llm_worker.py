@@ -11,6 +11,13 @@ from tap_ai.services.router import (
 )
 from tap_ai.utils.mq import publish_to_queue
 
+
+def _tts_enabled_for_voice() -> bool:
+    """Feature flag to control whether voice flow should enqueue TTS."""
+    # Default OFF to prioritize response latency unless explicitly enabled.
+    val = frappe.conf.get("tap_ai_enable_voice_tts", 0)
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
 def process_message(ch, method, properties, body):
     """Callback triggered when a message is pulled from text_query_queue."""
     payload = json.loads(body)
@@ -53,26 +60,46 @@ def process_message(ch, method, properties, body):
 
         # 5. Routing Logic (Voice vs Text)
         if is_voice:
-            # Update state so the frontend knows text is done, audio is next
-            state_dict.update({
-                "status": "text_generated",
-                "answer_text": answer,
-                "language": language,
-                "transcribed_text": query,
-                "session_id": session_id,
-            })
-            frappe.cache().set(request_id, json.dumps(state_dict))
+            if _tts_enabled_for_voice():
+                # Update state so the frontend knows text is done, audio is next.
+                state_dict.update({
+                    "status": "text_generated",
+                    "answer_text": answer,
+                    "language": language,
+                    "transcribed_text": query,
+                    "session_id": session_id,
+                })
+                frappe.cache().set(request_id, json.dumps(state_dict))
 
-            # Publish to TTS queue for the final voice step
-            publish_to_queue("audio_tts_queue", {
-                "request_id": request_id,
-                "answer": answer,
-                "user_id": user_id,
-                "session_id": session_id,
-                "language": language,
-                "transcribed_text": query
-            })
-            print(f"[>] Voice detected: Routed {request_id} to audio_tts_queue")
+                # Publish to TTS queue for the final voice step.
+                publish_to_queue("audio_tts_queue", {
+                    "request_id": request_id,
+                    "answer": answer,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "language": language,
+                    "transcribed_text": query
+                })
+                print(f"[>] Voice detected: Routed {request_id} to audio_tts_queue")
+            else:
+                # Text-only fast path for voice mode: finalize immediately.
+                state_dict.update({
+                    "status": "success",
+                    "answer": answer,
+                    "answer_text": answer,
+                    "audio_url": None,
+                    "query": query,
+                    "transcribed_text": query,
+                    "language": language,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "history": chat_history[-10:],
+                    "metadata": out.get("metadata", {}),
+                })
+                state_dict.setdefault("metadata", {})
+                state_dict["metadata"]["tts_skipped"] = True
+                frappe.cache().set(request_id, json.dumps(state_dict))
+                print(f"[✓] Voice task {request_id} completed as text-only (TTS disabled).")
 
         else:
             # Standard Text Query - Finish and save to Redis
