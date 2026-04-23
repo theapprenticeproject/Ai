@@ -11,6 +11,8 @@ Rich metadata
 """
 
 import json
+import time
+import hashlib
 import uuid
 from typing import Dict, Any, List, Optional
 
@@ -33,6 +35,49 @@ def _llm() -> ChatOpenAI:
         model=get_config("primary_llm_model") or "gpt-4o-mini",  
         temperature=0.0  
     )  
+
+
+def llm_invoke_cached(
+    messages: List,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.0,
+    cache_ttl: int = 3600,
+) -> str:
+    """Invoke LLM with Redis caching; falls back to live invoke on cache issues."""
+    try:
+        payload = {
+            "messages": messages,
+            "model": model,
+            "temperature": temperature,
+        }
+        cache_key = "llm_cache:" + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+
+        cached = frappe.cache().get(cache_key)
+        if cached:
+            if isinstance(cached, bytes):
+                cached = cached.decode("utf-8", errors="ignore")
+            return str(cached)
+    except Exception:
+        cache_key = None
+
+    llm = _llm()
+    start = time.time()
+    resp = llm.invoke(messages)
+    content = getattr(resp, "content", "")
+    if content is None:
+        content = ""
+    content = str(content).strip()
+
+    try:
+        if cache_key and content:
+            frappe.cache().set(cache_key, content, ex=cache_ttl)
+    except Exception:
+        pass
+
+    print(f"> LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
+    return content
 
 
 # ======================================================
@@ -60,8 +105,6 @@ Return ONLY JSON:
 
 
 def choose_tool(query: str, user_context: Optional[str] = None) -> str:
-    llm = _llm()
-
     prompt = f"USER QUESTION:\n{query}"
     if user_context:
         prompt = f"USER CONTEXT:\n{user_context}\n\n{prompt}"
@@ -69,8 +112,11 @@ def choose_tool(query: str, user_context: Optional[str] = None) -> str:
     prompt += "\n\nWhich tool should be used?"
 
     try:
-        resp = llm.invoke([("system", ROUTER_PROMPT), ("user", prompt)])
-        content = getattr(resp, "content", "").strip()
+        content = llm_invoke_cached(
+            [("system", ROUTER_PROMPT), ("user", prompt)],
+            model=get_config("primary_llm_model") or "gpt-4o-mini",
+            temperature=0.0,
+        )
         content = content.replace("```json", "").replace("```", "").strip()
         data = json.loads(content)
         tool = data.get("tool")
