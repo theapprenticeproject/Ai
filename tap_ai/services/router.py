@@ -198,7 +198,8 @@ def process_query(
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
-    context: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None,
+    voice_mode: bool = False,
 ) -> dict:
 
     chat_history = chat_history or []
