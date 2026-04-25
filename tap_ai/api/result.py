@@ -87,6 +87,7 @@ def _empty_result(request_id: str, status: str = "failed", error: str | None = N
         "transcribed_text": None,
         "audio_url": None,
         "language": None,
+        "timing_ms": None,
         "error": error,
     }
 
@@ -130,6 +131,11 @@ def _normalize_result(data: dict, request_id: str) -> dict:
     query = data.get("query") or data.get("transcribed_text")
 
     audio_url = _as_public_url(data.get("audio_url"))
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    timings_ms = metadata.get("timings_ms") if isinstance(metadata.get("timings_ms"), dict) else {}
+    timing_ms = data.get("timing_ms")
+    if timing_ms is None:
+        timing_ms = timings_ms.get("direct_llm") or timings_ms.get("total")
 
     out = {
         "request_id": request_id,
@@ -142,6 +148,7 @@ def _normalize_result(data: dict, request_id: str) -> dict:
         "transcribed_text": data.get("transcribed_text"),
         "audio_url": audio_url,
         "language": data.get("language"),
+        "timing_ms": timing_ms,
         "error": data.get("error"),
     }
 

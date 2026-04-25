@@ -2,6 +2,7 @@
 Direct conversational answerer for greetings, small talk, and motivational guidance.
 """
 
+import time
 from typing import Dict, Any, List, Optional
 
 import frappe
@@ -46,6 +47,7 @@ def answer_direct(
     chat_history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Generate a direct conversational response without SQL or RAG retrieval."""
+    start = time.perf_counter()
     llm = _llm(model=get_config("primary_llm_model") or "gpt-4o-mini")
     chat_history = chat_history or []
 
@@ -77,17 +79,31 @@ def answer_direct(
     try:
         resp = llm.invoke(messages)
         answer = getattr(resp, "content", "").strip() or "I am here with you. Tell me what feels hardest right now, and we can break it into small steps."
+        timing_ms = int((time.perf_counter() - start) * 1000)
         return {
             "question": query,
             "answer": answer,
             "response_type": "direct_llm",
             "user_context": "personalized" if user_profile else "general",
+            "metadata": {
+                "timings_ms": {
+                    "direct_llm": timing_ms,
+                    "total": timing_ms,
+                }
+            },
         }
     except Exception as e:
+        timing_ms = int((time.perf_counter() - start) * 1000)
         frappe.log_error(f"Direct answer generation failed: {e}", "tap_ai.services.direct_answerer")
         return {
             "question": query,
             "answer": "I am here to help. Would you like a quick study plan for the next 15 minutes?",
             "response_type": "direct_llm",
             "error": str(e),
+            "metadata": {
+                "timings_ms": {
+                    "direct_llm": timing_ms,
+                    "total": timing_ms,
+                }
+            },
         }
