@@ -8,6 +8,8 @@ from tap_ai.api.result import result
 
 TRANSCRIBE_DONE_STATES = {
     "transcribed",
+    "vector_search_success",
+    "vector_search_failed",
     "generating_answer",
     "text_generated",
     "generating_audio",
@@ -46,9 +48,18 @@ def voice_result(
     phase = (phase or "answer").strip().lower()
 
     # Phase 2: final answer (reuses existing unified long-poll logic)
-    if phase != "transcribe":
+    if phase == "answer":
         return result(
             request_id=request_id,
+            phase=phase,
+            wait_seconds=wait_seconds,
+            poll_interval_ms=poll_interval_ms,
+        )
+
+    if phase == "search":
+        return result(
+            request_id=request_id,
+            phase=phase,
             wait_seconds=wait_seconds,
             poll_interval_ms=poll_interval_ms,
         )
@@ -70,7 +81,7 @@ def voice_result(
     deadline = time.monotonic() + resolved_wait_seconds
 
     while True:
-        out = result(request_id=request_id, wait_seconds=0, poll_interval_ms=resolved_poll_interval_ms)
+        out = result(request_id=request_id, phase="answer", wait_seconds=0, poll_interval_ms=resolved_poll_interval_ms)
         raw_status = (out.get("raw_status") or "").strip().lower()
         canonical_status = (out.get("status") or "").strip().lower()
 

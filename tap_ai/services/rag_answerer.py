@@ -422,6 +422,182 @@ Use friendly, age-appropriate language.
         return "There was an error while generating the answer."
 
 
+def retrieve_vector_search(
+    query: str,
+    k: int = 6,
+    route_top_n: int = 5,
+    user_profile: Optional[Dict[str, Any]] = None,
+    content_details: Optional[Dict[str, Any]] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """
+    Run the vector-search side of the RAG pipeline without answer synthesis.
+
+    This is used when the request needs to expose vector search completion as a
+    separate observable phase before the final answer is synthesized.
+    """
+    chat_history = chat_history or []
+    start = time.time()
+    timings_ms: Dict[str, int] = {}
+
+    def _stamp(stage_name: str, t0: float):
+        timings_ms[stage_name] = int((time.time() - t0) * 1000)
+
+    effective_k = _effective_k(k)
+
+    t_refine = time.time()
+    refined_query = _refine_query_with_history(query, chat_history)
+    _stamp("refine_query", t_refine)
+
+    t_filters = time.time()
+    metadata_filter = _build_metadata_filter(user_profile, content_details)
+    _stamp("build_filters", t_filters)
+
+    t_search = time.time()
+    search_result = search_auto_namespaces(
+        q=refined_query,
+        k=effective_k,
+        route_top_n=route_top_n,
+        filters=metadata_filter,
+    )
+    _stamp("vector_search", t_search)
+
+    matches = search_result.get("matches") or []
+    routed_doctypes = search_result.get("routed_doctypes") or []
+
+    if not matches:
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        return {
+            "success": False,
+            "question": query,
+            "answer": None,
+            "routed_doctypes": routed_doctypes,
+            "results_count": 0,
+            "search_time": round(time.time() - start, 2),
+            "user_context": "personalized" if user_profile else "general",
+            "error": "I couldn't find relevant information for your question.",
+            "metadata": {
+                "refined_query": refined_query,
+                "filters_used": metadata_filter,
+                "effective_k": effective_k,
+                "effective_context_hits_cap": _max_context_hits(),
+                "sources": [],
+                "timings_ms": timings_ms,
+                "context_stats": {},
+            },
+            "context_text": "",
+            "context_stats": {},
+        }
+
+    t_context = time.time()
+    ctx = _build_context_from_hits(matches, max_chars=_max_context_chars())
+    _stamp("build_context", t_context)
+    context_text = ctx["context_text"]
+
+    if not context_text.strip():
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        return {
+            "success": False,
+            "question": query,
+            "answer": None,
+            "routed_doctypes": routed_doctypes,
+            "results_count": len(matches),
+            "search_time": round(time.time() - start, 2),
+            "user_context": "personalized" if user_profile else "general",
+            "error": "I found references but not enough details to answer confidently.",
+            "metadata": {
+                "refined_query": refined_query,
+                "filters_used": metadata_filter,
+                "effective_k": effective_k,
+                "effective_context_hits_cap": _max_context_hits(),
+                "sources": ctx["sources"],
+                "timings_ms": timings_ms,
+                "context_stats": ctx.get("stats") or {},
+            },
+            "context_text": "",
+            "context_stats": ctx.get("stats") or {},
+        }
+
+    timings_ms["total"] = int((time.time() - start) * 1000)
+
+    return {
+        "success": True,
+        "question": query,
+        "answer": None,
+        "routed_doctypes": routed_doctypes,
+        "results_count": len(matches),
+        "search_time": round(time.time() - start, 2),
+        "user_context": "personalized" if user_profile else "general",
+        "metadata": {
+            "refined_query": refined_query,
+            "filters_used": metadata_filter,
+            "effective_k": effective_k,
+            "effective_context_hits_cap": _max_context_hits(),
+            "sources": ctx["sources"],
+            "timings_ms": timings_ms,
+            "context_stats": ctx.get("stats") or {},
+        },
+        "context_text": context_text,
+        "context_stats": ctx.get("stats") or {},
+    }
+
+
+def synthesize_vector_search_answer(
+    query: str,
+    vector_search_bundle: Dict[str, Any],
+    user_profile: Optional[Dict[str, Any]] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Generate the final answer from a previously prepared vector-search bundle."""
+    start = time.time()
+    chat_history = chat_history or []
+
+    context_text = vector_search_bundle.get("context_text") or ""
+    if not context_text.strip():
+        return {
+            "question": query,
+            "answer": vector_search_bundle.get("error") or "I couldn't find relevant information for your question.",
+            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+            "results_count": vector_search_bundle.get("results_count") or 0,
+            "search_time": vector_search_bundle.get("search_time"),
+            "user_context": vector_search_bundle.get("user_context") or ("personalized" if user_profile else "general"),
+            "error": vector_search_bundle.get("error") or "No vector-search context available.",
+            "metadata": vector_search_bundle.get("metadata") or {},
+        }
+
+    t_synth = time.time()
+    answer = _synthesize_answer(
+        query=query,
+        context_text=context_text,
+        user_profile=user_profile,
+        history=chat_history,
+    )
+
+    metadata = dict(vector_search_bundle.get("metadata") or {})
+    timings_ms = dict(metadata.get("timings_ms") or {})
+    timings_ms["synthesize_answer"] = int((time.time() - t_synth) * 1000)
+    timings_ms["total"] = int((time.time() - start) * 1000) + int((vector_search_bundle.get("metadata") or {}).get("timings_ms", {}).get("total", 0))
+    metadata["timings_ms"] = timings_ms
+
+    return {
+        "question": query,
+        "answer": answer,
+        "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+        "results_count": vector_search_bundle.get("results_count") or 0,
+        "search_time": vector_search_bundle.get("search_time"),
+        "user_context": vector_search_bundle.get("user_context") or ("personalized" if user_profile else "general"),
+        "metadata": metadata,
+        "vector_search": {
+            "status": "success" if vector_search_bundle.get("success") else "failed",
+            "raw_status": "vector_search_success" if vector_search_bundle.get("success") else "vector_search_failed",
+            "results_count": vector_search_bundle.get("results_count") or 0,
+            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+            "search_time": vector_search_bundle.get("search_time"),
+            "metadata": vector_search_bundle.get("metadata") or {},
+        },
+    }
+
+
 # ======================================================
 # MAIN ENTRY POINT
 # ======================================================
