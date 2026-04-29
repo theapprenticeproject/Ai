@@ -1,13 +1,9 @@
 import frappe
 import json
 import uuid
-import hashlib
 import time
 from tap_ai.services.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue
-
-#  OPTIMIZATION: Request deduplication 
-DEDUP_WINDOW_SEC = 3  # 3-second window for dedup
 
 # Polling constants
 MAX_WAIT_SECONDS = 55
@@ -146,60 +142,7 @@ def _resolve_user_id(data: dict) -> str:
     return user_id
 
 
-def _get_or_create_request(q: str, user_id: str, window_sec: int = DEDUP_WINDOW_SEC) -> dict:
-    """
-     OPTIMIZATION: Request deduplication 
-    Return existing request if identical query in progress, else create new.
-    """
-    dedup_key = f"dedup_{user_id}:{hashlib.md5(q.encode()).hexdigest()}"
-    cached_req = frappe.cache().get(dedup_key)
-    
-    if cached_req:
-        try:
-            existing = json.loads(cached_req)
-            print(f"✓ Request dedup hit: reusing {existing['request_id']}")
-            return {"request_id": existing["request_id"], "deduplicated": True}
-        except Exception:
-            pass
-    
-    # Create new request
-    request_id = f"REQ_{uuid.uuid4().hex[:8]}"
-    frappe.cache().set(dedup_key, json.dumps({"request_id": request_id}), ex=window_sec)
-    return {"request_id": request_id, "deduplicated": False}
-
-@frappe.whitelist(methods=["POST"], allow_guest=True)
-def query(
-    wait_seconds: int | None = None,
-    poll_interval_ms: int | None = None,
-):
-    """
-    Unified Query API.
-    Accepts either:
-    - q (text input), or
-    - audio_url (voice input)
-
-    Optional long-polling:
-    - wait_seconds: 0-55, or omit for auto (text: 8s, voice: 25s)
-    - poll_interval_ms: 100-2000, or omit for auto (text: 300ms, voice: 500ms)
-
-    Returns request_id immediately if wait_seconds=0, otherwise waits for result.
-    Processing is handled by RabbitMQ workers.
-    """
-    data = frappe.local.form_dict or {}
-    q = (data.get("q") or "").strip()
-    audio_url = (data.get("audio_url") or "").strip()
-    user_id = _resolve_user_id(data)
-    session_id = data.get("session_id")
-
-    if not q and not audio_url:
-        frappe.throw("Provide one input in POST body: q (text) or audio_url (voice).")
-    if q and audio_url:
-        frappe.throw("Provide only one input per request: q or audio_url, not both.")
-
-    is_voice = bool(audio_url)
-
-    # Voice requests are costlier, so use a lower limit.
-    api_key = _extract_api_key()
+def _extract_api_key() -> str | None:
     scope = f"voice_api_{user_id}" if is_voice else f"query_api_{user_id}"
     limit = 30 if is_voice else 60
 
@@ -221,19 +164,9 @@ def query(
 
     request_prefix = "VREQ" if is_voice else "REQ"
     
-    # Resolve wait settings to check if polling is enabled
-    resolved_wait = _resolve_wait_seconds(wait_seconds, is_voice=is_voice)
-    
-    #  OPTIMIZATION: Request deduplication for text queries
-    # Skip dedup if polling is enabled to avoid request conflicts
-    if not is_voice and q and resolved_wait == 0:
-        dedup_result = _get_or_create_request(q, user_id)
-        request_id = dedup_result["request_id"]
-        if dedup_result.get("deduplicated"):
-            # Return existing request ID immediately
-            return {"request_id": request_id, "deduplicated": True}
-    else:
-        request_id = f"{request_prefix}_{uuid.uuid4().hex[:8]}"
+    # Create unique request_id for each request to avoid race conditions
+    # from concurrent processing of identical questions
+    request_id = f"{request_prefix}_{uuid.uuid4().hex[:8]}"
 
     state = {
         "status": "pending",
