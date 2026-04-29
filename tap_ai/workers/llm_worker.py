@@ -119,7 +119,8 @@ def _process_vector_search_synthesis(payload: dict) -> None:
     print(f"\n[*] [LLM Worker] Synthesizing vector-search answer for: {request_id}")
 
     state_dict = _load_request_state(request_id)
-    state_dict["status"] = "generating_answer"
+    # Preserve vector_search_success status; only track that synthesis is in progress
+    state_dict["synthesis_phase"] = "synthesizing"
     state_dict["session_id"] = session_id
     _save_request_state(request_id, state_dict)
 
