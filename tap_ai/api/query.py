@@ -2,11 +2,130 @@ import frappe
 import json
 import uuid
 import hashlib
+import time
 from tap_ai.services.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue
 
 #  OPTIMIZATION: Request deduplication 
 DEDUP_WINDOW_SEC = 3  # 3-second window for dedup
+
+# Polling constants
+MAX_WAIT_SECONDS = 55
+MIN_POLL_INTERVAL_MS = 100
+MAX_POLL_INTERVAL_MS = 2000
+
+AUTO_TEXT_WAIT_SECONDS = 8
+AUTO_VOICE_WAIT_SECONDS = 25
+AUTO_TEXT_POLL_INTERVAL_MS = 300
+AUTO_VOICE_POLL_INTERVAL_MS = 500
+
+
+def _to_int(value, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(min(parsed, max_value), min_value)
+
+
+def _resolve_wait_seconds(wait_seconds, is_voice: bool) -> int:
+    if wait_seconds is None or wait_seconds == "":
+        auto_wait = AUTO_VOICE_WAIT_SECONDS if is_voice else AUTO_TEXT_WAIT_SECONDS
+        return _to_int(auto_wait, default=0, min_value=0, max_value=MAX_WAIT_SECONDS)
+    return _to_int(wait_seconds, default=0, min_value=0, max_value=MAX_WAIT_SECONDS)
+
+
+def _resolve_poll_interval_ms(poll_interval_ms, is_voice: bool) -> int:
+    if poll_interval_ms is None or poll_interval_ms == "":
+        auto_interval = AUTO_VOICE_POLL_INTERVAL_MS if is_voice else AUTO_TEXT_POLL_INTERVAL_MS
+        return _to_int(
+            auto_interval,
+            default=500,
+            min_value=MIN_POLL_INTERVAL_MS,
+            max_value=MAX_POLL_INTERVAL_MS,
+        )
+    return _to_int(
+        poll_interval_ms,
+        default=500,
+        min_value=MIN_POLL_INTERVAL_MS,
+        max_value=MAX_POLL_INTERVAL_MS,
+    )
+
+
+def _safe_load_cache_payload(cached) -> tuple[dict | None, str | None]:
+    if cached is None:
+        return None, "No cached payload found"
+    if isinstance(cached, dict):
+        return cached, None
+    if isinstance(cached, bytes):
+        cached = cached.decode("utf-8", errors="replace")
+    if not isinstance(cached, str):
+        return None, f"Unsupported cached payload type: {type(cached).__name__}"
+    if not cached.strip():
+        return None, "Cached payload is empty"
+    try:
+        data = json.loads(cached)
+    except Exception as exc:
+        return None, f"Invalid cached payload JSON: {exc}"
+    if not isinstance(data, dict):
+        return None, "Cached payload JSON is not an object"
+    return data, None
+
+
+def _normalize_result(data: dict, request_id: str) -> dict:
+    """
+    Returns a simplified result for the query API.
+    """
+    mode = "voice" if request_id.startswith("VREQ_") else "text"
+    status = data.get("status")
+    if status == "success":
+        status = "success"
+    elif status == "failed":
+        status = "failed"
+    else:
+        status = "processing"
+
+    answer = data.get("answer") or data.get("answer_text")
+    query = data.get("query") or data.get("transcribed_text")
+
+    return {
+        "request_id": request_id,
+        "mode": mode,
+        "status": status,
+        "answer": answer,
+        "query": query,
+        "error": data.get("error"),
+    }
+
+
+def _wait_for_result(request_id: str, is_voice: bool, wait_seconds: int | None = None, poll_interval_ms: int | None = None) -> dict | None:
+    """
+    Polls the cache for a result until status changes from 'processing' or timeout.
+    Returns the normalized result dict if found, or None if timeout.
+    """
+    wait_seconds = _resolve_wait_seconds(wait_seconds, is_voice=is_voice)
+    poll_interval_ms = _resolve_poll_interval_ms(poll_interval_ms, is_voice=is_voice)
+
+    if wait_seconds == 0:
+        return None
+
+    deadline = time.monotonic() + wait_seconds
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+
+        time.sleep(min(poll_interval_ms / 1000.0, remaining))
+
+        cached = frappe.cache().get(request_id)
+        data, error = _safe_load_cache_payload(cached)
+        if error:
+            return None
+
+        out = _normalize_result(data, request_id)
+        if out.get("status") != "processing":
+            return out
 
 
 def _extract_api_key() -> str | None:
@@ -49,14 +168,22 @@ def _get_or_create_request(q: str, user_id: str, window_sec: int = DEDUP_WINDOW_
     return {"request_id": request_id, "deduplicated": False}
 
 @frappe.whitelist(methods=["POST"], allow_guest=True)
-def query():
+def query(
+    wait_seconds: int | None = None,
+    poll_interval_ms: int | None = None,
+):
     """
     Unified Query API.
     Accepts either:
     - q (text input), or
     - audio_url (voice input)
 
-    Returns request_id immediately. Processing is handled by RabbitMQ workers.
+    Optional long-polling:
+    - wait_seconds: 0-55, or omit for auto (text: 8s, voice: 25s)
+    - poll_interval_ms: 100-2000, or omit for auto (text: 300ms, voice: 500ms)
+
+    Returns request_id immediately if wait_seconds=0, otherwise waits for result.
+    Processing is handled by RabbitMQ workers.
     """
     data = frappe.local.form_dict or {}
     q = (data.get("q") or "").strip()
@@ -140,5 +267,10 @@ def query():
         if session_id:
             payload["session_id"] = session_id
         publish_to_queue("text_query_queue", payload)
+
+    # Wait for result if requested
+    result = _wait_for_result(request_id, is_voice, wait_seconds, poll_interval_ms)
+    if result:
+        return result
 
     return {"request_id": request_id}
