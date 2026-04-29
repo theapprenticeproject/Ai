@@ -1,12 +1,8 @@
 import frappe
 import json
 import uuid
-import hashlib
 from tap_ai.services.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue
-
-#  OPTIMIZATION: Request deduplication 
-DEDUP_WINDOW_SEC = 3  # 3-second window for dedup
 
 
 def _extract_api_key() -> str | None:
@@ -27,27 +23,6 @@ def _resolve_user_id(data: dict) -> str:
     return user_id
 
 
-def _get_or_create_request(q: str, user_id: str, window_sec: int = DEDUP_WINDOW_SEC) -> dict:
-    """
-     OPTIMIZATION: Request deduplication 
-    Return existing request if identical query in progress, else create new.
-    """
-    dedup_key = f"dedup_{user_id}:{hashlib.md5(q.encode()).hexdigest()}"
-    cached_req = frappe.cache().get(dedup_key)
-    
-    if cached_req:
-        try:
-            existing = json.loads(cached_req)
-            print(f"✓ Request dedup hit: reusing {existing['request_id']}")
-            return {"request_id": existing["request_id"], "deduplicated": True}
-        except Exception:
-            pass
-    
-    # Create new request
-    request_id = f"REQ_{uuid.uuid4().hex[:8]}"
-    frappe.cache().set(dedup_key, json.dumps({"request_id": request_id}), ex=window_sec)
-    return {"request_id": request_id, "deduplicated": False}
-
 @frappe.whitelist(methods=["POST"], allow_guest=True)
 def query():
     """
@@ -58,87 +33,91 @@ def query():
 
     Returns request_id immediately. Processing is handled by RabbitMQ workers.
     """
-    data = frappe.local.form_dict or {}
-    q = (data.get("q") or "").strip()
-    audio_url = (data.get("audio_url") or "").strip()
-    user_id = _resolve_user_id(data)
-    session_id = data.get("session_id")
+    try:
+        data = frappe.local.form_dict or {}
+        q = (data.get("q") or "").strip()
+        audio_url = (data.get("audio_url") or "").strip()
+        user_id = _resolve_user_id(data)
+        session_id = data.get("session_id")
 
-    if not q and not audio_url:
-        frappe.throw("Provide one input in POST body: q (text) or audio_url (voice).")
-    if q and audio_url:
-        frappe.throw("Provide only one input per request: q or audio_url, not both.")
+        if not q and not audio_url:
+            frappe.throw("Provide one input in POST body: q (text) or audio_url (voice).")
+        if q and audio_url:
+            frappe.throw("Provide only one input per request: q or audio_url, not both.")
 
-    is_voice = bool(audio_url)
+        is_voice = bool(audio_url)
 
-    # Voice requests are costlier, so use a lower limit.
-    api_key = _extract_api_key()
-    scope = f"voice_api_{user_id}" if is_voice else f"query_api_{user_id}"
-    limit = 30 if is_voice else 60
+        # Voice requests are costlier, so use a lower limit.
+        api_key = _extract_api_key()
+        scope = f"voice_api_{user_id}" if is_voice else f"query_api_{user_id}"
+        limit = 30 if is_voice else 60
 
-    ok, remaining, reset = check_rate_limit(
-        api_key=api_key,
-        scope=scope,
-        limit=limit,
-        window_sec=60
-    )
-    if not ok:
-        if is_voice:
-            message = f"Voice query rate limit exceeded. Try again in {reset} seconds."
-        else:
-            message = f"Rate limit exceeded. Try again in {reset} seconds."
-        frappe.throw(
-            message,
-            frappe.TooManyRequestsError,
+        ok, remaining, reset = check_rate_limit(
+            api_key=api_key,
+            scope=scope,
+            limit=limit,
+            window_sec=60
         )
+        if not ok:
+            if is_voice:
+                message = f"Voice query rate limit exceeded. Try again in {reset} seconds."
+            else:
+                message = f"Rate limit exceeded. Try again in {reset} seconds."
+            frappe.throw(
+                message,
+                frappe.TooManyRequestsError,
+            )
 
-    request_prefix = "VREQ" if is_voice else "REQ"
-    
-    #  OPTIMIZATION: Request deduplication for text queries
-    if not is_voice and q:
-        dedup_result = _get_or_create_request(q, user_id)
-        request_id = dedup_result["request_id"]
-        if dedup_result.get("deduplicated"):
-            # Return existing request ID immediately
-            return {"request_id": request_id, "deduplicated": True}
-    else:
+        request_prefix = "VREQ" if is_voice else "REQ"
+
+        # Create a unique request id for every incoming request
         request_id = f"{request_prefix}_{uuid.uuid4().hex[:8]}"
 
-    state = {
-        "status": "pending",
-        "user_id": user_id,
-        "mode": "voice" if is_voice else "text",
-    }
-
-    if is_voice:
-        state["audio_url"] = audio_url
-    else:
-        state.update({
-            "answer": None,
-            "query": q,
-            "history": [],
-        })
-
-    # Keep a bounded TTL for both request types.
-    frappe.cache().set(request_id, json.dumps(state), ex=3600)
-
-    if is_voice:
-        payload = {
-            "request_id": request_id,
-            "audio_url": audio_url,
+        state = {
+            "status": "pending",
             "user_id": user_id,
+            "mode": "voice" if is_voice else "text",
         }
-        if session_id:
-            payload["session_id"] = session_id
-        publish_to_queue("audio_stt_queue", payload)
-    else:
-        payload = {
-            "request_id": request_id,
-            "query": q,
-            "user_id": user_id,
-        }
-        if session_id:
-            payload["session_id"] = session_id
-        publish_to_queue("text_query_queue", payload)
 
-    return {"request_id": request_id}
+        if is_voice:
+            state["audio_url"] = audio_url
+        else:
+            state.update({
+                "answer": None,
+                "query": q,
+                "history": [],
+            })
+
+        # Keep a bounded TTL for both request types.
+        frappe.cache().set(request_id, json.dumps(state), ex=3600)
+
+        if is_voice:
+            payload = {
+                "request_id": request_id,
+                "audio_url": audio_url,
+                "user_id": user_id,
+            }
+            if session_id:
+                payload["session_id"] = session_id
+            publish_to_queue("audio_stt_queue", payload)
+        else:
+            payload = {
+                "request_id": request_id,
+                "query": q,
+                "user_id": user_id,
+            }
+            if session_id:
+                payload["session_id"] = session_id
+            publish_to_queue("text_query_queue", payload)
+
+        return {"request_id": request_id}
+    except frappe.TooManyRequestsError:
+        # Re-raise rate limit errors so they propagate with proper status
+        raise
+    except Exception as e:
+        # Log and return a safe non-empty response
+        try:
+            frappe.log_error(str(e), "Query API Error")
+        except Exception:
+            pass
+        return {"error": str(e), "status": "failed"}
