@@ -221,8 +221,12 @@ def query(
 
     request_prefix = "VREQ" if is_voice else "REQ"
     
+    # Resolve wait settings to check if polling is enabled
+    resolved_wait = _resolve_wait_seconds(wait_seconds, is_voice=is_voice)
+    
     #  OPTIMIZATION: Request deduplication for text queries
-    if not is_voice and q:
+    # Skip dedup if polling is enabled to avoid request conflicts
+    if not is_voice and q and resolved_wait == 0:
         dedup_result = _get_or_create_request(q, user_id)
         request_id = dedup_result["request_id"]
         if dedup_result.get("deduplicated"):
