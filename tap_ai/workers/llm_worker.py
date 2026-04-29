@@ -120,6 +120,7 @@ def _process_vector_search_synthesis(payload: dict) -> None:
 
     state_dict = _load_request_state(request_id)
     # Preserve vector_search_success status; only track that synthesis is in progress
+    state_dict["tool"] = "vector_search"
     state_dict["synthesis_phase"] = "synthesizing"
     state_dict["session_id"] = session_id
     _save_request_state(request_id, state_dict)
@@ -209,11 +210,12 @@ def process_message(ch, method, properties, body):
 
     primary_tool = choose_tool(query)
 
-    print(f"\n[*] [LLM Worker] Picked up task: {request_id} | Query: '{query}' | Session: {session_id}")
+    print(f"\n[*] [LLM Worker] Picked up task: {request_id} | Query: '{query}' | Session: {session_id} | Tool: {primary_tool}")
 
     try:
         # 1. Update status to provide real-time UI feedback
         state_dict = _load_request_state(request_id)
+        state_dict["tool"] = primary_tool
         state_dict["status"] = "generating_answer"
         state_dict["session_id"] = session_id
         _save_request_state(request_id, state_dict)
@@ -231,6 +233,7 @@ def process_message(ch, method, properties, body):
             if not vector_search_bundle.get("success"):
                 state_dict.update({
                     "status": "vector_search_failed",
+                    "tool": "vector_search",
                     "error": vector_search_bundle.get("error") or "Vector search failed.",
                     "vector_search": {
                         "status": "failed",
@@ -248,6 +251,7 @@ def process_message(ch, method, properties, body):
 
             state_dict.update({
                 "status": "vector_search_success",
+                "tool": "vector_search",
                 "vector_search": {
                     "status": "success",
                     "raw_status": "vector_search_success",

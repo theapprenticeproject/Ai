@@ -167,6 +167,8 @@ def _normalize_result(data: dict, request_id: str) -> dict:
         out["user_id"] = data.get("user_id")
     if "vector_search" in data:
         out["vector_search"] = data.get("vector_search")
+    if "tool" in data:
+        out["tool"] = data.get("tool")
 
     return out
 
