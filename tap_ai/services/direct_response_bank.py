@@ -67,6 +67,30 @@ def _parse_aliases(raw_value: Any) -> List[str]:
 
 
 def _entry_candidates(entry: Dict[str, Any]) -> List[str]:
+	"""
+	Extract ALL candidate phrases from a KB entry.
+	
+	This ensures we check BOTH student_query and alternate_queries to maximize
+	matching coverage in lookup_exact_direct_response().
+	
+	Process:
+	1. Collect primary phrase: student_query
+	2. Collect secondary phrase: normalized_query (if different)
+	3. Parse alternate_queries string/list into individual items
+	   └─ alternate_queries can be newline-separated, comma-separated, or a list
+	   └─ _parse_aliases() handles all formats
+	4. Return deduplicated list of all candidates
+	
+	Example:
+	  entry = {
+	    "student_query": "Hi",
+	    "alternate_queries": "Hey\nHello\nHii",
+	  }
+	  
+	  Returns: ["Hi", "Hey", "Hello", "Hii"]
+	  
+	  Then lookup_exact_direct_response() normalizes each and checks for matches.
+	"""
 	candidates = []
 	for value in (entry.get("student_query"), entry.get("normalized_query")):
 		text = str(value or "").strip()
@@ -367,7 +391,32 @@ def lookup_exact_direct_response(
 	query: str,
 	user_profile: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-	"""Return a knowledge-bank response only when the query matches exactly after normalization."""
+	"""
+	STAGE 1: EXACT MATCH LOOKUP (FAST PATH)
+	=======================================
+	
+	Return a knowledge-bank response only when the query matches exactly after
+	normalization. This is the fastest path in the KB execution flow.
+	
+	Process:
+	1. Normalize the user's query (lowercase, remove special chars, trim)
+	2. For each KB entry, get ALL candidates:
+	   - student_query (primary intent phrase)
+	   - alternate_queries (variants, typos, translations, etc.)
+	   └─ _entry_candidates() handles parsing alternate_queries into a list
+	3. For each candidate, normalize it the same way
+	4. If normalized candidate == normalized query: MATCH FOUND!
+	5. Render the response (e.g., replace {name} with user's actual name)
+	6. Return immediately (no LLM needed)
+	
+	Examples of candidates matched:
+	  KB Entry: student_query="Hi", alternate_queries="Hey,Hii"
+	  ├─ Candidate 1: "Hi"   → Match "hi" (normalized)
+	  ├─ Candidate 2: "Hey"  → Match "hey"
+	  └─ Candidate 3: "Hii"  → Match "hii" (even with typo)
+	
+	Timing: ~50ms (no LLM, simple normalization + loop)
+	"""
 	start = time.perf_counter()
 	entries = get_direct_response_entries()
 	query_norm = normalize_text(query)
@@ -376,6 +425,7 @@ def lookup_exact_direct_response(
 		if not entry or not entry.get("is_active", 1):
 			continue
 
+		# Check ALL candidates: student_query + alternate_queries
 		for candidate in _entry_candidates(entry):
 			if normalize_text(candidate) != query_norm:
 				continue

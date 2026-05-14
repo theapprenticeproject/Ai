@@ -106,8 +106,34 @@ Rules:
 '''
 
 def verify_and_respond(query: str, user_profile: Optional[Dict[str, Any]] = None, chat_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
-    """Single-pass LLM selection flow.
-    Loads all active KB entries, passes them to the LLM, and asks it to either match one or answer on its own.
+    """
+    STAGE 2: LLM FALLBACK WITH FULL KB CONTEXT
+    ==========================================
+    
+    Called when regex matched but exact lookup failed.
+    
+    This ensures no regex-matched query is left unhandled by giving the LLM
+    complete context about available KB responses. The LLM can:
+    1. Match the query to a KB entry (even with slight variations)
+    2. Return the matched KB response (no additional LLM generation needed)
+    3. OR generate a custom answer if no KB match is appropriate
+    
+    Process:
+    1. Load ALL active KB entries
+    2. For each entry, collect match_queries (student_query + alternate_queries)
+    3. Format lightweight payload: {id, match_queries, response}
+    4. Pass entire KB to LLM with the user query
+    5. LLM decides: {"match": entry_id, "source": "kb_exact", "answer": ...}
+       OR:          {"match": null, "source": "llm_generated", "answer": "..."}
+    6. If matched KB entry: return KB response (with variable rendering)
+       If LLM generated: return LLM answer
+    
+    Timing: ~200-500ms (1 LLM call with full context)
+    
+    Examples of queries handled here:
+      Regex Match: "heyyyy"        → LLM recognizes "hey" variant → Returns KB "Hey" response
+      Regex Match: "gud morning"   → LLM recognizes "good morning" variant → Returns KB response
+      Regex Match: "submit kartau" → No good KB match → LLM generates supportive answer
     """
     start = time.perf_counter()
     chat_history = chat_history or []

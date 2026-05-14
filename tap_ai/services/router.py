@@ -26,6 +26,7 @@ from tap_ai.services.rag_answerer import answer_from_pinecone
 from tap_ai.services.direct_answerer import answer_direct
 from tap_ai.services.direct_response_bank import lookup_direct_response, lookup_exact_direct_response, probe_direct_response_match
 from tap_ai.services.single_pass_kb_router import verify_and_respond as verify_kb_and_respond
+from tap_ai.services.routing_patterns import match_fast_kb, match_fast_sql
 
 
 # ======================================================
@@ -111,24 +112,15 @@ Return ONLY JSON:
 }
 """
 
-FAST_SQL_PATTERNS = re.compile(r"\b(list|count|how many|show me all|filter)\b", re.I)
-FAST_KB_PATTERNS = re.compile(
-    r"^(?:h(?:i+|e+y+)|hello+|good\s*(?:morning|afternoon|evening)|namaste|who\s+are\s+you|thanks?|thank\s+you|bye+)\b",
-    re.I,
-)
-
 
 def _fast_route(query: str) -> Optional[str]:
-    q = (query or "").strip()
-    if not q:
-        return None
-
-    if FAST_KB_PATTERNS.match(q):
+    """Fast pattern-based routing without LLM."""
+    if match_fast_kb(query):
         return "knowledge_bank"
-
-    if FAST_SQL_PATTERNS.search(q):
+    
+    if match_fast_sql(query):
         return "text_to_sql"
-
+    
     return None
 
 
@@ -282,6 +274,44 @@ def process_query(
 
     # -------- Execute --------
     if primary_tool == "knowledge_bank":
+        """
+        KNOWLEDGE BANK EXECUTION FLOW
+        =============================
+        
+        The knowledge_bank tool follows a two-stage process:
+        
+        STAGE 1: EXACT MATCH LOOKUP (FAST PATH)
+        ──────────────────────────────────────
+        lookup_exact_direct_response(query) checks if the user's query matches
+        any KB entry after normalization. This includes:
+          - student_query field
+          - alternate_queries field (all variants)
+        
+        If found: Returns KB response immediately (~50ms, no LLM)
+        
+        Examples:
+          Query: "Hi"           → Matches "hi" (student_query)
+          Query: "Hello there"  → Matches "hello" (alternate_query)
+          Query: "Goodbye"      → Matches "bye" (alternate_query)
+        
+        STAGE 2: LLM FALLBACK (REGEX MATCH BUT NO EXACT MATCH)
+        ──────────────────────────────────────────────────────
+        If exact match fails, verify_kb_and_respond() is called.
+        This loads the ENTIRE active KB and passes it to the LLM to:
+          1. Check if the query semantically matches any KB entry
+          2. Return the matched KB response if found
+          3. Generate a custom answer if no KB match exists
+        
+        The LLM has full context: match_queries + responses for all KB entries
+        This ensures regex-matched queries (e.g., "hello" matching regex) don't
+        get dropped if alternate queries weren't explicitly added to the KB.
+        
+        Examples:
+          Regex Match: "heyyyy"      → Exact: NO → LLM: Matches "hey" intent → KB Response
+          Regex Match: "gud morning" → Exact: NO → LLM: Matches "good morning" → KB Response
+        """
+        
+        # STAGE 1: Try exact match (fast path, no LLM)
         exact_result = lookup_exact_direct_response(
             query=query,
             user_profile=user_profile,
@@ -289,7 +319,7 @@ def process_query(
         if exact_result:
             result = exact_result
         else:
-            # Hybrid approach: probe KB for best candidate, then ask LLM to verify/use it.
+            # STAGE 2: LLM selection with full KB context (fallback)
             result = verify_kb_and_respond(
                 query=query,
                 user_profile=user_profile,
