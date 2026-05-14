@@ -107,12 +107,6 @@ FAST_KB_PATTERNS = re.compile(
     (?:
         \b(?:k|ok|acha|thik\s+hai|hmm|sure|yep|yup)\b
     )
-    |
-    # Emoji-only or repeated emoji
-    (?:
-        ^[\s\p{So}]+$|
-        [\p{So}]{5,}
-    )
     """,
     re.I | re.X | re.UNICODE,
 )
