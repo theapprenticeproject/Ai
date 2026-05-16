@@ -12,82 +12,18 @@ Rich metadata
 
 import json
 import time
-import hashlib
 import uuid
 from typing import Dict, Any, List, Optional
 
 import frappe
-from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.services.sql_answerer import answer_from_sql
 from tap_ai.services.rag_answerer import answer_from_pinecone
-
 from tap_ai.services.direct_response_bank import lookup_exact_direct_response
 from tap_ai.services.single_pass_kb_router import verify_and_respond as verify_kb_and_respond
 from tap_ai.services.routing_patterns import match_fast_kb, match_fast_sql
-
-
-# ======================================================
-# LLM INITIALIZATION
-# ======================================================
-
-def _llm(
-    model: Optional[str] = None,
-    temperature: float = 0.0,
-    max_tokens: int = 1500,
-) -> ChatOpenAI:
-    from tap_ai.infra.llm_client import LLMClient
-    return LLMClient.get_client(
-        model=model or (get_config("primary_llm_model") or "gpt-4o-mini"),
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-
-
-def llm_invoke_cached(
-    messages: List,
-    model: str = "gpt-4o-mini",
-    temperature: float = 0.0,
-    cache_ttl: int = 3600,
-    max_tokens: int = 700,
-) -> str:
-    """Invoke LLM with Redis caching; falls back to live invoke on cache issues."""
-    try:
-        payload = {
-            "messages": messages,
-            "model": model,
-            "temperature": temperature,
-        }
-        cache_key = "llm_cache:" + hashlib.sha256(
-            json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()
-
-        cached = frappe.cache().get(cache_key)
-        if cached:
-            if isinstance(cached, bytes):
-                cached = cached.decode("utf-8", errors="ignore")
-            return str(cached)
-    except Exception:
-        cache_key = None
-
-    llm = _llm(model=model, temperature=temperature, max_tokens=max_tokens)
-    start = time.time()
-    resp = llm.invoke(messages)
-    content = getattr(resp, "content", "")
-    if content is None:
-        content = ""
-    content = str(content).strip()
-
-    try:
-        if cache_key and content:
-            frappe.cache().set(cache_key, content, ex=cache_ttl)
-    except Exception:
-        pass
-
-    print(f"> LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
-    return content
-
 
 # ======================================================
 # ROUTER PROMPT
