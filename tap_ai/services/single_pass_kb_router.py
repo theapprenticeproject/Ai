@@ -160,9 +160,16 @@ def verify_and_respond(query: str, user_profile: Optional[Dict[str, Any]] = None
         })
 
     # 3. Build the LLM Messages
+    try:
+        persona = get_system_message_for_context(user_profile=user_profile)
+    except Exception:
+        persona = ""
+
     messages = []
     messages.append(("system", SINGLE_PASS_KB_PROMPT))
-    
+    if persona:
+        messages.append(("system", f"When generating a direct answer (no KB match), speak as this persona:\n{persona}"))
+
     if chat_history:
         messages.append(("system", "Recent chat context: " + " | ".join([m.get('content','') for m in chat_history[-3:]])))
 
@@ -182,7 +189,8 @@ def verify_and_respond(query: str, user_profile: Optional[Dict[str, Any]] = None
         decision = json.loads(cleaned)
     except Exception:
         # Failsafe: if LLM breaks JSON format, do a raw fallback
-        fallback = _llm_invoke_cached([("system", "You are TAP Buddy. Answer concisely."), ("user", query)], model=model, temperature=0.3, max_tokens=300)
+        fallback_system = persona or "You are TAP Buddy. Answer concisely."
+        fallback = _llm_invoke_cached([("system", fallback_system), ("user", query)], model=model, temperature=0.3, max_tokens=300)
         timing_ms = int((time.perf_counter() - start) * 1000)
         return {
             "question": query, 

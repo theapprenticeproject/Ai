@@ -23,7 +23,7 @@ from langchain_openai import ChatOpenAI
 from tap_ai.infra.config import get_config
 from tap_ai.services.sql_answerer import answer_from_sql
 from tap_ai.services.rag_answerer import answer_from_pinecone
-from tap_ai.services.direct_answerer import answer_direct
+
 from tap_ai.services.direct_response_bank import lookup_direct_response, lookup_exact_direct_response, probe_direct_response_match
 from tap_ai.services.single_pass_kb_router import verify_and_respond as verify_kb_and_respond
 from tap_ai.services.routing_patterns import match_fast_kb, match_fast_sql

@@ -411,20 +411,10 @@ def _synthesize_answer(
     except Exception:
         persona = ""
 
-    if user_profile and user_profile.get("name"):
-        system_prompt = f"""You are a helpful educational AI assistant.
-
-The user is {user_profile['name']}.
-Grade: {user_profile.get('grade', 'N/A')}
-
-Use friendly, age-appropriate language.
-"""
-    else:
-        system_prompt = """You are a helpful educational AI assistant."""
+    # TAP Buddy persona is the sole system message; fall back to a minimal prompt.
+    system_prompt = persona or "You are a helpful educational AI assistant."
 
     messages = [["system", system_prompt]]
-    if persona:
-        messages.append(["system", persona])
     for msg in history[-synthesis_history_turns:]:
         messages.append([msg["role"], msg["content"]])
     messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])
