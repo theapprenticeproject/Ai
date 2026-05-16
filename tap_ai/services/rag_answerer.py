@@ -439,6 +439,7 @@ def retrieve_vector_search(
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
+    refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the vector-search side of the RAG pipeline without answer synthesis.
@@ -455,8 +456,10 @@ def retrieve_vector_search(
 
     effective_k = _effective_k(k)
 
+    # Skip refinement if the router already refined it upstream.
     t_refine = time.time()
-    refined_query = _refine_query_with_history(query, chat_history)
+    if refined_query is None:
+        refined_query = _refine_query_with_history(query, chat_history)
     _stamp("refine_query", t_refine)
 
     t_filters = time.time()
@@ -619,6 +622,7 @@ def answer_from_pinecone(
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
+    refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
 
     chat_history = chat_history or []
@@ -632,9 +636,12 @@ def answer_from_pinecone(
 
     effective_k = _effective_k(k)
 
-    # 1. Refine query
+    # 1. Refine query — skip if the router already refined it upstream.
     t_refine = time.time()
-    refined_query = _refine_query_with_history(query, chat_history)
+    if refined_query is None:
+        refined_query = _refine_query_with_history(query, chat_history)
+    else:
+        print(f"> Using pre-refined query from router: {refined_query}")
     _stamp("refine_query", t_refine)
 
     # 2. Build metadata filters

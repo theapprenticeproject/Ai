@@ -4,7 +4,6 @@ import json
 import logging
 import hashlib
 from typing import List, Dict, Any, Optional
-from functools import lru_cache
 
 import frappe
 from langchain_openai import ChatOpenAI

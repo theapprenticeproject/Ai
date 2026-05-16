@@ -264,63 +264,6 @@ def invalidate_kb_cache() -> bool:
 		return False
 
 
-def probe_direct_response_match(
-	query: str,
-	entries: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-	"""Return the best KB candidate even when it does not meet the acceptance threshold."""
-	start = time.perf_counter()
-	entries = entries if entries is not None else get_direct_response_entries()
-	threshold = _minimum_score(query)
-	best: Optional[Tuple[float, Dict[str, Any], str]] = None
-	second_best_score = 0.0
-
-	for entry in entries:
-		if not entry or not entry.get("is_active", 1):
-			continue
-
-		for candidate in _entry_candidates(entry):
-			score = _score_candidate(query, candidate)
-			if best is None or score > best[0]:
-				if best is not None:
-					second_best_score = max(second_best_score, best[0])
-				best = (score, entry, candidate)
-			else:
-				second_best_score = max(second_best_score, score)
-
-	timing_ms = int((time.perf_counter() - start) * 1000)
-	if not best:
-		return {
-			"matched": False,
-			"best_score": None,
-			"second_best_score": None,
-			"threshold": threshold,
-			"timing_ms": timing_ms,
-			"fallback_reason": "no_knowledge_bank_candidate",
-		}
-
-	score, entry, matched_query = best
-	accepted = score >= threshold
-	fallback_reason = None if accepted else "below_threshold"
-
-	return {
-		"matched": accepted,
-		"best_score": round(score, 3),
-		"second_best_score": round(second_best_score, 3),
-		"threshold": threshold,
-		"timing_ms": timing_ms,
-		"fallback_reason": fallback_reason,
-		"knowledge_bank": {
-			"doctype": KB_DOCTYPE,
-			"name": entry.get("name"),
-			"title": entry.get("title"),
-			"category": entry.get("category"),
-			"subcategory": entry.get("subcategory"),
-			"student_query": entry.get("student_query"),
-			"matched_query": matched_query,
-		},
-	}
-
 
 def _render_response(response: str, user_profile: Optional[Dict[str, Any]] = None) -> str:
 	if not response:
@@ -339,52 +282,6 @@ def _render_response(response: str, user_profile: Optional[Dict[str, Any]] = Non
 
 	return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", replace, str(response))
 
-
-def lookup_direct_response(
-	query: str,
-	user_profile: Optional[Dict[str, Any]] = None,
-	chat_history: Optional[List[Dict[str, str]]] = None,
-) -> Optional[Dict[str, Any]]:
-	"""Return a knowledge-bank response if the query matches an entry."""
-	start = time.perf_counter()
-	entries = get_direct_response_entries()
-	match = select_best_response(query, entries)
-	# Debug: log match info so we can see why a query matched or missed
-	try:
-		if match:
-			print(f"> KB match found: title={match.get('title')!r} score={match.get('match_score')!r} matched_query={match.get('matched_query')!r}")
-		else:
-			print("> KB match: none (no entry passed threshold)")
-	except Exception:
-		pass
-	if not match:
-		return None
-
-	answer = _render_response(match.get("response", ""), user_profile=user_profile).strip()
-	timing_ms = int((time.perf_counter() - start) * 1000)
-	return {
-		"question": query,
-		"answer": answer,
-		"response_type": "knowledge_bank",
-		"user_context": "personalized" if user_profile else "general",
-		"metadata": {
-			"timings_ms": {
-				"knowledge_bank": timing_ms,
-				"processing_total": timing_ms,
-			},
-			"answer_source": "knowledge_bank",
-			"knowledge_bank": {
-				"doctype": KB_DOCTYPE,
-				"name": match.get("name"),
-				"title": match.get("title"),
-				"category": match.get("category"),
-				"subcategory": match.get("subcategory"),
-				"student_query": match.get("student_query"),
-				"matched_query": match.get("matched_query"),
-				"match_score": match.get("match_score"),
-			},
-		},
-	}
 
 
 def lookup_exact_direct_response(

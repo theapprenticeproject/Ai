@@ -23,9 +23,7 @@ import frappe
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import LLMClient
 from tap_ai.services.direct_response_bank import (
-    # probe_direct_response_match,  # probe-based flow replaced by LLM-first
     get_direct_response_entries,
-    get_entries_for_category,
     _render_response,
 )
 from tap_ai.services.prompt_bank import get_system_message_for_context
