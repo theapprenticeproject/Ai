@@ -1,1 +1,225 @@
-"""\nSingle-Pass LLM Knowledge Bank Router\n\nFlow:\n1. Fetch all active Knowledge Bank entries (IDs, queries, and alternate queries).\n2. Pass the user's query and the entire Knowledge Bank payload to a single LLM prompt.\n3. The LLM performs a semantic sweep of all entries.\n    - If a strong intent match is found, it returns the matched KB ID.\n    - If no match is found, it acts autonomously and synthesizes a direct response.\n4. Render the final response (injecting user variables) and return the structured dict.\n5. Cache LLM outputs to reduce latency on repeated queries.\n\nThis router replaces the previous two-step (classifier + selector) pipeline, eliminating\nclassification bottlenecks and reducing sequential API network latency.\n"""\n\nimport json\nimport time\nfrom typing import Any, Dict, List, Optional\n\nimport frappe\nfrom tap_ai.infra.config import get_config\nfrom tap_ai.infra.llm_client import llm_invoke_cached\nfrom tap_ai.services.direct_response_bank import (\n    get_direct_response_entries,\n    _render_response,\n)\nfrom tap_ai.services.prompt_bank import get_system_message_for_context\n\n\nLLM_VERIFIER_CACHE_TTL = 900  # 15 minutes\n\n\nSYSTEM_PROMPT = '''You are an assistant that decides whether a curated Knowledge Bank response matches the user's intent.\n\nInput includes:\n- User query\n- Candidate knowledge-bank entry metadata: title, matched_query, match_score, category\n- The curated KB response text\n\nTask:\n1) If the user's intent is the same as the candidate's intent, return JSON: {"action": "use_kb", "final_answer": "<the KB response possibly lightly personalized>", "reason": "short explanation"}\n2) If the intent is different, return JSON: {"action": "llm_answer", "final_answer": "<LLM-generated answer>", "reason": "short explanation"}\n\nIntent matters more than fuzzy score.\nIf the query is a greeting, small talk, identity question, or program explanation and the KB candidate matches that same intent, use KB.\nIf the query asks something else, do not force KB just because the response is semantically related.\n\nBe concise. Preserve any essential facts from the KB when using it. Personalize using student name/grade if provided.\n\nReturn ONLY JSON and nothing else.\n'''\n\n\nSINGLE_PASS_KB_PROMPT = '''You are TAP Buddy, a supportive educational assistant.\nI will provide you with a User Query and a Knowledge Bank (a list of allowed responses, their IDs, and the queries they match).\n\nTask:\n1. Scan the Knowledge Bank to find a semantic match for the User Query. Look at both the `student_query` and the `alternate_queries`.\n2. If there is a strong semantic intent match, you MUST return EXACT JSON:\n   {"match": "<id>", "source": "kb_exact", "answer": "<the exact KB response, personalized with student info if applicable>"}\n3. If the user query is completely unrelated to anything in the Knowledge Bank, act as a helpful AI and answer directly. Return EXACT JSON:\n   {"match": null, "source": "llm_generated", "answer": "<your concise, friendly, helpful 1-2 sentence response>"}\n\nRules:\n- Do NOT invent or hallucinate IDs.\n- Keep LLM generated replies concise, empathetic, and age-appropriate.\n- Return ONLY valid JSON.\n'''\n\ndef verify_and_respond(query: str, user_profile: Optional[Dict[str, Any]] = None, chat_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:\n    """\n    STAGE 2: LLM FALLBACK WITH FULL KB CONTEXT\n    ==========================================\n\n    Called when regex matched but exact lookup failed.\n\n    This ensures no regex-matched query is left unhandled by giving the LLM\n    complete context about available KB responses. The LLM can:\n    1. Match the query to a KB entry (even with slight variations)\n    2. Return the matched KB response (no additional LLM generation needed)\n    3. OR generate a custom answer if no KB match is appropriate\n\n    Process:\n    1. Load ALL active KB entries\n    2. For each entry, collect match_queries (student_query + alternate_queries)\n    3. Format lightweight payload: {id, match_queries, response}\n    4. Pass entire KB to LLM with the user query\n    5. LLM decides: {"match": entry_id, "source": "kb_exact", "answer": ...}\n       OR:          {"match": null, "source": "llm_generated", "answer": "..."}\n    6. If matched KB entry: return KB response (with variable rendering)\n       If LLM generated: return LLM answer\n\n    Timing: ~200-500ms (1 LLM call with full context)\n\n    Examples of queries handled here:\n      Regex Match: "heyyyy"        â†’ LLM recognizes "hey" variant â†’ Returns KB "Hey" response\n      Regex Match: "gud morning"   â†’ LLM recognizes "good morning" variant â†’ Returns KB response\n      Regex Match: "submit kartau" â†’ No good KB match â†’ LLM generates supportive answer\n    """\n    start = time.perf_counter()\n    chat_history = chat_history or []\n\n    # 1. Fetch ALL active entries directly\n    all_entries = get_direct_response_entries()\n\n    # 2. Format a lightweight payload to save tokens\n    # We combine student_query and alternate_queries to give the LLM max context\n    entries_payload = []\n    for e in all_entries:\n        if not e or not e.get("is_active", 1):\n            continue\n\n        # Parse alternate queries from string/list to flat list\n        from tap_ai.services.direct_response_bank import _parse_aliases\n        alt_queries = _parse_aliases(e.get("alternate_queries"))\n        all_match_queries = [e.get("student_query")] + alt_queries\n\n        entries_payload.append({\n            "id": e.get("name"),\n            "match_queries": [q for q in all_match_queries if q], # remove empty\n            "response": e.get("response")\n        })\n\n    # 3. Build the LLM Messages\n    try:\n        persona = get_system_message_for_context(user_profile=user_profile)\n    except Exception:\n        persona = ""\n\n    messages = []\n    messages.append(("system", SINGLE_PASS_KB_PROMPT))\n    if persona:\n        messages.append(("system", f"When generating a direct answer (no KB match), speak as this persona:\n{persona}"))\n\n    if chat_history:\n        messages.append(("system", "Recent chat context: " + " | ".join([m.get('content','') for m in chat_history[-3:]])))\n\n    messages.append(("user", json.dumps({\n        "user_query": query,\n        "knowledge_bank": entries_payload\n    }, ensure_ascii=False)))\n\n    # 4. Invoke LLM\n    model = get_config("primary_llm_model") or "gpt-4o-mini"\n    # Note: max_tokens increased to allow for longer prompt processing\n    raw_selection = llm_invoke_cached(\n        messages,\n        model=model,\n        temperature=0.1,\n        cache_ttl=LLM_VERIFIER_CACHE_TTL,\n        max_tokens=800,\n    )\n\n    # 5. Parse the LLM output\n    try:\n        cleaned = raw_selection.replace("```json", "").replace("```", "").strip()\n        decision = json.loads(cleaned)\n    except Exception:\n        # Failsafe: if LLM breaks JSON format, do a raw fallback\n        fallback_system = persona or "You are TAP Buddy. Answer concisely."\n        fallback = llm_invoke_cached(\n            [("system", fallback_system), ("user", query)],\n            model=model,\n            temperature=0.3,\n            cache_ttl=LLM_VERIFIER_CACHE_TTL,\n            max_tokens=300,\n        )\n        timing_ms = int((time.perf_counter() - start) * 1000)\n        return {\n            "question": query,\n            "answer": str(fallback).strip(),\n            "response_type": "llm_generated",\n            "user_context": "personalized" if user_profile else "general",\n            "metadata": {"decision": "fallback_malformed_json", "timing_ms": timing_ms}\n        }\n\n    # 6. Extract results\n    match_id = decision.get("match")\n    source = decision.get("source")\n    answer_text = decision.get("answer", "")\n\n    # If it chose a KB exact match, apply your rendering (name replacement, etc.)\n    if match_id and source == "kb_exact":\n        # Render the response just in case the LLM didn't perfectly replace variables\n        answer_text = _render_response(answer_text, user_profile=user_profile)\n        response_type = "knowledge_bank"\n    else:\n        response_type = "llm_generated"\n\n    timing_ms = int((time.perf_counter() - start) * 1000)\n    return {\n        "question": query,\n        "answer": answer_text,\n        "response_type": response_type,\n        "user_context": "personalized" if user_profile else "general",\n        "metadata": {\n            "matched_id": match_id,\n            "decision": source,\n            "timing_ms": timing_ms\n        },\n    }\n\n
+"""
+Single-Pass LLM Knowledge Bank Router
+
+Flow:
+1. Fetch all active Knowledge Bank entries (IDs, queries, and alternate queries).
+2. Pass the user's query and the entire Knowledge Bank payload to a single LLM prompt.
+3. The LLM performs a semantic sweep of all entries. 
+    - If a strong intent match is found, it returns the matched KB ID.
+    - If no match is found, it acts autonomously and synthesizes a direct response.
+4. Render the final response (injecting user variables) and return the structured dict.
+5. Cache LLM outputs to reduce latency on repeated queries.
+
+This router replaces the previous two-step (classifier + selector) pipeline, eliminating 
+classification bottlenecks and reducing sequential API network latency.
+"""
+
+import json
+import time
+import hashlib
+from typing import Any, Dict, List, Optional
+
+import frappe
+from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import LLMClient
+from tap_ai.services.direct_response_bank import (
+    get_direct_response_entries,
+    _render_response,
+)
+from tap_ai.services.prompt_bank import get_system_message_for_context
+
+
+LLM_VERIFIER_CACHE_TTL = 900  # 15 minutes
+
+
+def _llm(model: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 800):
+    return LLMClient.get_client(model=model or (get_config("primary_llm_model") or "gpt-4o-mini"),
+                                temperature=temperature, max_tokens=max_tokens)
+
+
+def _llm_invoke_cached(messages: List, model: str, temperature: float = 0.0, cache_ttl: int = LLM_VERIFIER_CACHE_TTL, max_tokens: int = 800) -> str:
+    try:
+        payload = {"messages": messages, "model": model, "temperature": temperature}
+        cache_key = "llm_verifier:" + hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        cached = frappe.cache().get(cache_key)
+        if cached:
+            if isinstance(cached, bytes):
+                cached = cached.decode("utf-8", errors="ignore")
+            print(f"> Verifier LLM cache hit {cache_key[:12]}...")
+            return str(cached)
+    except Exception:
+        cache_key = None
+
+    llm = _llm(model=model, temperature=temperature, max_tokens=max_tokens)
+    start = time.time()
+    resp = llm.invoke(messages)
+    content = getattr(resp, "content", "") or ""
+    content = str(content).strip()
+
+    try:
+        if cache_key and content:
+            frappe.cache().set(cache_key, content, ex=cache_ttl)
+    except Exception:
+        pass
+
+    print(f"> Verifier LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
+    return content
+
+
+SYSTEM_PROMPT = '''You are an assistant that decides whether a curated Knowledge Bank response matches the user's intent.
+
+Input includes:
+- User query
+- Candidate knowledge-bank entry metadata: title, matched_query, match_score, category
+- The curated KB response text
+
+Task:
+1) If the user's intent is the same as the candidate's intent, return JSON: {"action": "use_kb", "final_answer": "<the KB response possibly lightly personalized>", "reason": "short explanation"}
+2) If the intent is different, return JSON: {"action": "llm_answer", "final_answer": "<LLM-generated answer>", "reason": "short explanation"}
+
+Intent matters more than fuzzy score.
+If the query is a greeting, small talk, identity question, or program explanation and the KB candidate matches that same intent, use KB.
+If the query asks something else, do not force KB just because the response is semantically related.
+
+Be concise. Preserve any essential facts from the KB when using it. Personalize using student name/grade if provided.
+
+Return ONLY JSON and nothing else.
+'''
+
+
+SINGLE_PASS_KB_PROMPT = '''You are TAP Buddy, a supportive educational assistant. 
+I will provide you with a User Query and a Knowledge Bank (a list of allowed responses, their IDs, and the queries they match).
+
+Task:
+1. Scan the Knowledge Bank to find a semantic match for the User Query. Look at both the `student_query` and the `alternate_queries`.
+2. If there is a strong semantic intent match, you MUST return EXACT JSON:
+   {"match": "<id>", "source": "kb_exact", "answer": "<the exact KB response, personalized with student info if applicable>"}
+3. If the user query is completely unrelated to anything in the Knowledge Bank, act as a helpful AI and answer directly. Return EXACT JSON:
+   {"match": null, "source": "llm_generated", "answer": "<your concise, friendly, helpful 1-2 sentence response>"}
+
+Rules:
+- Do NOT invent or hallucinate IDs.
+- Keep LLM generated replies concise, empathetic, and age-appropriate.
+- Return ONLY valid JSON.
+'''
+
+def verify_and_respond(query: str, user_profile: Optional[Dict[str, Any]] = None, chat_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    """
+    STAGE 2: LLM FALLBACK WITH FULL KB CONTEXT
+    ==========================================
+    
+    Called when regex matched but exact lookup failed.
+    
+    This ensures no regex-matched query is left unhandled by giving the LLM
+    complete context about available KB responses. The LLM can:
+    1. Match the query to a KB entry (even with slight variations)
+    2. Return the matched KB response (no additional LLM generation needed)
+    3. OR generate a custom answer if no KB match is appropriate
+    
+    Process:
+    1. Load ALL active KB entries
+    2. For each entry, collect match_queries (student_query + alternate_queries)
+    3. Format lightweight payload: {id, match_queries, response}
+    4. Pass entire KB to LLM with the user query
+    5. LLM decides: {"match": entry_id, "source": "kb_exact", "answer": ...}
+       OR:          {"match": null, "source": "llm_generated", "answer": "..."}
+    6. If matched KB entry: return KB response (with variable rendering)
+       If LLM generated: return LLM answer
+    
+    Timing: ~200-500ms (1 LLM call with full context)
+    
+    Examples of queries handled here:
+      Regex Match: "heyyyy"        → LLM recognizes "hey" variant → Returns KB "Hey" response
+      Regex Match: "gud morning"   → LLM recognizes "good morning" variant → Returns KB response
+      Regex Match: "submit kartau" → No good KB match → LLM generates supportive answer
+    """
+    start = time.perf_counter()
+    chat_history = chat_history or []
+
+    # 1. Fetch ALL active entries directly
+    all_entries = get_direct_response_entries()
+    
+    # 2. Format a lightweight payload to save tokens
+    # We combine student_query and alternate_queries to give the LLM max context
+    entries_payload = []
+    for e in all_entries:
+        if not e or not e.get("is_active", 1):
+            continue
+            
+        # Parse alternate queries from string/list to flat list
+        from tap_ai.services.direct_response_bank import _parse_aliases
+        alt_queries = _parse_aliases(e.get("alternate_queries"))
+        all_match_queries = [e.get("student_query")] + alt_queries
+        
+        entries_payload.append({
+            "id": e.get("name"),
+            "match_queries": [q for q in all_match_queries if q], # remove empty
+            "response": e.get("response")
+        })
+
+    # 3. Build the LLM Messages
+    try:
+        persona = get_system_message_for_context(user_profile=user_profile)
+    except Exception:
+        persona = ""
+
+    messages = []
+    messages.append(("system", SINGLE_PASS_KB_PROMPT))
+    if persona:
+        messages.append(("system", f"When generating a direct answer (no KB match), speak as this persona:\n{persona}"))
+
+    if chat_history:
+        messages.append(("system", "Recent chat context: " + " | ".join([m.get('content','') for m in chat_history[-3:]])))
+
+    messages.append(("user", json.dumps({
+        "user_query": query, 
+        "knowledge_bank": entries_payload
+    }, ensure_ascii=False)))
+
+    # 4. Invoke LLM
+    model = get_config("primary_llm_model") or "gpt-4o-mini"
+    # Note: max_tokens increased to allow for longer prompt processing
+    raw_selection = _llm_invoke_cached(messages, model=model, temperature=0.1, max_tokens=800)
+
+    # 5. Parse the LLM output
+    try:
+        cleaned = raw_selection.replace("```json", "").replace("```", "").strip()
+        decision = json.loads(cleaned)
+    except Exception:
+        # Failsafe: if LLM breaks JSON format, do a raw fallback
+        fallback_system = persona or "You are TAP Buddy. Answer concisely."
+        fallback = _llm_invoke_cached([("system", fallback_system), ("user", query)], model=model, temperature=0.3, max_tokens=300)
+        timing_ms = int((time.perf_counter() - start) * 1000)
+        return {
+            "question": query, 
+            "answer": str(fallback).strip(), 
+            "response_type": "llm_generated", 
+            "user_context": "personalized" if user_profile else "general", 
+            "metadata": {"decision": "fallback_malformed_json", "timing_ms": timing_ms}
+        }
+
+    # 6. Extract results
+    match_id = decision.get("match")
+    source = decision.get("source")
+    answer_text = decision.get("answer", "")
+
+    # If it chose a KB exact match, apply your rendering (name replacement, etc.)
+    if match_id and source == "kb_exact":
+        # Render the response just in case the LLM didn't perfectly replace variables
+        answer_text = _render_response(answer_text, user_profile=user_profile)
+        response_type = "knowledge_bank"
+    else:
+        response_type = "llm_generated"
+
+    timing_ms = int((time.perf_counter() - start) * 1000)
+    return {
+        "question": query,
+        "answer": answer_text,
+        "response_type": response_type,
+        "user_context": "personalized" if user_profile else "general",
+        "metadata": {
+            "matched_id": match_id,
+            "decision": source, 
+            "timing_ms": timing_ms
+        },
+    }

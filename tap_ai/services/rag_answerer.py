@@ -1,1 +1,692 @@
-"""\nVector RAG Engine for TAP AI\n\nConversational query refinement\nPinecone routing with optional grade/batch/course filtering\nRobust context construction from DB (batched + char budget)\nPersonalized answer synthesis\nRich metadata for debugging & observability\nDynamicConfig compatible\n"""\n\nimport json\nimport time\nfrom typing import Dict, Any, List, Optional\n\nimport frappe\n\nfrom tap_ai.infra.config import get_config\nfrom tap_ai.infra.llm_client import llm_invoke_cached\nfrom tap_ai.services.prompt_bank import get_system_message_for_context\nfrom tap_ai.services.pinecone_store import (\n    search_auto_namespaces,\n    get_db_columns_for_doctype,\n    embed_query_cached,\n    _record_to_text,\n)\n\n\n# ======================================================\n# QUERY REFINER (FROM EARLIER VERSION â€“ KEPT)\n# ======================================================\n\nREFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand.\n\n- If already standalone, return as is\n- Incorporate relevant context from history\n- Do NOT answer the question\n\nReturn ONLY the refined question.\n"""\n\n_FOLLOW_UP_MARKERS = (\n    "it", "this", "that", "these", "those", "they", "them", "he", "she", "yes",\n    "first one", "second one", "third one", "the above", "previous", "earlier",\n    "same", "that one", "explain more", "summarize that", "what about", "how about",\n)\n\n\ndef _to_int(value: Any, default: int) -> int:\n    try:\n        return int(value)\n    except Exception:\n        return default\n\n\ndef _to_float(value: Any, default: float) -> float:\n    try:\n        return float(value)\n    except Exception:\n        return default\n\n\ndef _should_refine_query(query: str, history: List[Dict[str, str]]) -> bool:\n    """Refine only likely follow-up queries; skip standalone questions to save ~1-2s."""\n    if not history:\n        return False\n\n    force_refine = str(get_config("rag_force_query_refine") or "").strip().lower()\n    if force_refine in ("1", "true", "yes", "on"):\n        return True\n\n    q = (query or "").strip().lower()\n    if not q:\n        return False\n\n    if any(marker in q for marker in _FOLLOW_UP_MARKERS):\n        return True\n\n    if q.startswith(("and ", "then ", "also ", "so ")):\n        return True\n\n    # Standalone definition/factual queries usually do not need refinement.\n    return False\n\ndef _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:\n    if not _should_refine_query(query, history):\n        return query\n\n    history_turns = max(1, _to_int(get_config("rag_refine_history_turns") or 2, 2))\n    max_chars_per_msg = max(80, _to_int(get_config("rag_refine_message_chars") or 240, 240))\n    recent_history = history[-history_turns:]\n\n    if not recent_history:\n        return query\n\n    formatted_history = "\n".join(\n        f"{msg.get('role', 'user')}: {(msg.get('content') or '')[:max_chars_per_msg]}"\n        for msg in recent_history\n    )\n\n    prompt = (\n        f"CHAT HISTORY:\n{formatted_history}\n\n"\n        f"FOLLOW-UP QUESTION:\n{query}\n\n"\n        f"REFINED STANDALONE QUESTION:"\n    )\n\n    try:\n        refined = llm_invoke_cached(\n            [("system", REFINER_PROMPT), ("user", prompt)],\n            model="gpt-4o-mini",\n            temperature=0.0,\n            max_tokens=120,\n        )\n        print(f"> Refined Query: {refined}")\n        return refined\n    except Exception as e:\n        frappe.log_error(f"Query refiner failed: {e}")\n        return query\n\n\n# ======================================================\n# METADATA FILTER BUILDER (MENTOR VERSION â€“ KEPT)\n# ======================================================\n\ndef _build_metadata_filter(\n    user_profile: Optional[Dict] = None,\n    content_details: Optional[Dict] = None\n) -> Optional[Dict[str, Any]]:\n    filters = {}\n\n    if user_profile:\n        if user_profile.get("grade"):\n            filters["grade"] = user_profile["grade"]\n        if user_profile.get("batch"):\n            filters["batch"] = user_profile["batch"]\n        if user_profile.get("current_enrollment", {}).get("course"):\n            filters["course"] = user_profile["current_enrollment"]["course"]\n\n    if content_details and content_details.get("type"):\n        filters["content_type"] = content_details["type"]\n\n    return filters or None\n\n\n# ======================================================\n# CONTEXT BUILDING\n# ======================================================\n\ndef _max_context_hits() -> int:\n    """Cap DB hydration to top-N vector hits to reduce latency."""\n    try:\n        configured = int(get_config("rag_max_context_hits") or 6)\n        return max(1, min(configured, 6))\n    except Exception:\n        return 6\n\n\ndef _effective_k(k: int) -> int:\n    """Hard-limit top-k to 6 for predictable latency."""\n    try:\n        parsed = int(k)\n    except Exception:\n        parsed = 6\n    return max(1, min(parsed, 6))\n\n\ndef _context_fields_for_doctype(doctype: str) -> List[str]:\n    """Fetch a compact field list for context hydration, with cache."""\n    cache_key = f"rag_context_fields:{doctype}"\n    cached = frappe.cache().get(cache_key)\n    if cached:\n        if isinstance(cached, bytes):\n            cached = cached.decode("utf-8", errors="ignore")\n        try:\n            fields = json.loads(cached)\n            if isinstance(fields, list) and fields:\n                return fields\n        except Exception:\n            pass\n\n    columns = get_db_columns_for_doctype(doctype) or []\n    columns_set = set(columns)\n\n    preferred = [\n        "name", "title", "subject", "topic", "description", "content",\n        "instructions", "learning_objective", "evaluation_points", "rubric",\n        "objective", "summary", "course", "grade", "batch", "modified",\n    ]\n    selected = [f for f in preferred if f in columns_set]\n\n    # Keep at most 15 columns for context hydration; fallback to first columns.\n    if not selected:\n        selected = ["name"] + [c for c in columns if c != "name"][:14]\n\n    # Ensure unique, stable order.\n    seen = set()\n    final_fields = []\n    for f in selected:\n        if f not in seen:\n            seen.add(f)\n            final_fields.append(f)\n\n    frappe.cache().set(cache_key, json.dumps(final_fields), ex=3600)\n    return final_fields\n\n\ndef _build_context_from_hits(\n    hits: List[Dict[str, Any]],\n    max_chars: int = 12000\n) -> Dict[str, Any]:\n    """\n     OPTIMIZATION: Batch DB queries by doctype (Phase 2)\n    Instead of: 15 hits = 15 DB queries\n    Now does: 2-3 doctypes = 2-3 batch queries\n    """\n    context_chunks: List[str] = []\n    sources: List[Dict[str, Any]] = []\n    used_chars = 0\n    metadata_hits_used = 0\n    db_queries = 0\n    meta_cache: Dict[str, Any] = {}\n\n    # Hydrate context only for top-N hits; deeper hits are often low signal.\n    top_hits = (hits or [])[: _max_context_hits()]\n\n    # Group hits by doctype\n    hits_by_doctype: Dict[str, List] = {}\n    for hit in top_hits:\n        meta = hit.get("metadata") or {}\n        doctype = meta.get("doctype")\n        record_ids = meta.get("record_ids") or []\n\n        if not doctype or not record_ids:\n            continue\n\n        if doctype not in hits_by_doctype:\n            hits_by_doctype[doctype] = []\n\n        hits_by_doctype[doctype].append((hit, record_ids))\n\n    # Fast path: if Pinecone metadata already carries a preview chunk, avoid DB hit.\n    pending_hits_by_doctype: Dict[str, List] = {}\n    for doctype, hits_group in hits_by_doctype.items():\n        for hit, record_ids in hits_group:\n            if used_chars >= max_chars:\n                break\n\n            meta = hit.get("metadata") or {}\n            preview = (meta.get("context_preview") or "").strip()\n            if preview:\n                chunk = f"DocType: {doctype}\nID: {record_ids[0]}\n{preview}"\n                if used_chars + len(chunk) > max_chars:\n                    continue\n                context_chunks.append(chunk)\n                metadata_hits_used += 1\n                sources.append({\n                    "doctype": doctype,\n                    "id": record_ids[0],\n                    "score": hit.get("score"),\n                })\n                used_chars += len(chunk)\n                continue\n\n            pending_hits_by_doctype.setdefault(doctype, []).append((hit, record_ids))\n\n    # Single batch query per doctype for misses\n    from tap_ai.utils.remote_db import get_remote_all\n\n    for doctype, hits_group in pending_hits_by_doctype.items():\n        if used_chars >= max_chars:\n            break\n\n        try:\n            # Collect all unique record IDs for this doctype\n            all_record_ids = []\n            for hit, record_ids in hits_group:\n                all_record_ids.extend(record_ids)\n\n            all_record_ids = list(set(all_record_ids))  # Deduplicate\n\n            if not all_record_ids:\n                continue\n\n            # âœ… ONE query per doctype instead of ONE per hit\n            fields = _context_fields_for_doctype(doctype)\n            rows = get_remote_all(\n                doctype,\n                fields=fields,\n                filters={"name": ["in", all_record_ids]},\n            )\n            db_queries += 1\n\n            # Map rows by name for quick lookup\n            rows_dict = {row.get("name"): row for row in rows}\n\n            # Build context from batched results\n            for hit, record_ids in hits_group:\n                if used_chars >= max_chars:\n                    break\n\n                for record_id in record_ids:\n                    if used_chars >= max_chars:\n                        break\n\n                    if record_id not in rows_dict:\n                        continue\n\n                    row = rows_dict[record_id]\n                    chunk = _record_to_text(doctype, row, meta_cache=meta_cache)\n\n                    if used_chars + len(chunk) > max_chars:\n                        break\n\n                    context_chunks.append(chunk)\n                    sources.append({\n                        "doctype": doctype,\n                        "id": row.get("name"),\n                        "score": hit.get("score"),\n                    })\n                    used_chars += len(chunk)\n\n        except Exception as e:\n            frappe.log_error(f"Context build failed for {doctype}: {e}")\n\n    return {\n        "context_text": "\n\n---\n\n".join(context_chunks),\n        "sources": sources,\n        "stats": {\n            "total_hits_in": len(hits or []),\n            "top_hits_used": len(top_hits),\n            "metadata_hits_used": metadata_hits_used,\n            "db_queries": db_queries,\n            "context_chars": used_chars,\n        },\n    }\n\n\ndef _max_context_chars() -> int:\n    """Bound synthesis context size to reduce token latency."""\n    return max(1200, _to_int(get_config("rag_max_context_chars") or 6000, 6000))\n\n\n# ======================================================\n# ANSWER SYNTHESIS\n# ======================================================\n\ndef _synthesize_answer(\n    query: str,\n    context_text: str,\n    user_profile: Optional[Dict] = None,\n    history: Optional[List[Dict[str, str]]] = None\n) -> str:\n    """\n     OPTIMIZATION: Use cached LLM invoke (Phase 1)\n    """\n    history = history or []\n    synthesis_history_turns = max(0, _to_int(get_config("rag_synthesis_history_turns") or 1, 1))\n    synthesis_temperature = _to_float(get_config("rag_synthesis_temperature") or 0.0, 0.0)\n    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 500, 500))\n    synthesis_model = get_config("rag_synthesis_model") or "gpt-4o-mini"\n\n    try:\n        persona = get_system_message_for_context(user_profile=user_profile)\n    except Exception:\n        persona = ""\n\n    # TAP Buddy persona is the sole system message; fall back to a minimal prompt.\n    system_prompt = persona or "You are a helpful educational AI assistant."\n\n    messages = [["system", system_prompt]]\n    for msg in history[-synthesis_history_turns:]:\n        messages.append([msg["role"], msg["content"]])\n    messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])\n\n    try:\n        answer = llm_invoke_cached(\n            messages,\n            model=synthesis_model,\n            temperature=synthesis_temperature,\n            max_tokens=synthesis_max_tokens,\n        )\n        return answer.strip() if answer else "I couldn't generate an answer."\n    except Exception as e:\n        frappe.log_error(f"RAG synthesis failed: {e}")\n        return "There was an error while generating the answer."\n\n\ndef retrieve_vector_search(\n    query: str,\n    k: int = 6,\n    route_top_n: int = 5,\n    user_profile: Optional[Dict[str, Any]] = None,\n    content_details: Optional[Dict[str, Any]] = None,\n    chat_history: Optional[List[Dict[str, str]]] = None,\n    refined_query: Optional[str] = None,\n) -> Dict[str, Any]:\n    """\n    Run the vector-search side of the RAG pipeline without answer synthesis.\n\n    This is used when the request needs to expose vector search completion as a\n    separate observable phase before the final answer is synthesized.\n    """\n    chat_history = chat_history or []\n    start = time.time()\n    timings_ms: Dict[str, int] = {}\n\n    def _stamp(stage_name: str, t0: float):\n        timings_ms[stage_name] = int((time.time() - t0) * 1000)\n\n    effective_k = _effective_k(k)\n\n    # Skip refinement if the router already refined it upstream.\n    t_refine = time.time()\n    if refined_query is None:\n        refined_query = _refine_query_with_history(query, chat_history)\n    _stamp("refine_query", t_refine)\n\n    t_filters = time.time()\n    metadata_filter = _build_metadata_filter(user_profile, content_details)\n    _stamp("build_filters", t_filters)\n\n    t_search = time.time()\n    search_result = search_auto_namespaces(\n        q=refined_query,\n        k=effective_k,\n        route_top_n=route_top_n,\n        filters=metadata_filter,\n    )\n    _stamp("vector_search", t_search)\n\n    matches = search_result.get("matches") or []\n    routed_doctypes = search_result.get("routed_doctypes") or []\n\n    if not matches:\n        timings_ms["total"] = int((time.time() - start) * 1000)\n        return {\n            "success": False,\n            "question": query,\n            "answer": None,\n            "routed_doctypes": routed_doctypes,\n            "results_count": 0,\n            "search_time": round(time.time() - start, 2),\n            "user_context": "personalized" if user_profile else "general",\n            "error": "I couldn't find relevant information for your question.",\n            "metadata": {\n                "refined_query": refined_query,\n                "filters_used": metadata_filter,\n                "effective_k": effective_k,\n                "effective_context_hits_cap": _max_context_hits(),\n                "sources": [],\n                "timings_ms": timings_ms,\n                "context_stats": {},\n            },\n            "context_text": "",\n            "context_stats": {},\n        }\n\n    t_context = time.time()\n    ctx = _build_context_from_hits(matches, max_chars=_max_context_chars())\n    _stamp("build_context", t_context)\n    context_text = ctx["context_text"]\n\n    if not context_text.strip():\n        timings_ms["total"] = int((time.time() - start) * 1000)\n        return {\n            "success": False,\n            "question": query,\n            "answer": None,\n            "routed_doctypes": routed_doctypes,\n            "results_count": len(matches),\n            "search_time": round(time.time() - start, 2),\n            "user_context": "personalized" if user_profile else "general",\n            "error": "I found references but not enough details to answer confidently.",\n            "metadata": {\n                "refined_query": refined_query,\n                "filters_used": metadata_filter,\n                "effective_k": effective_k,\n                "effective_context_hits_cap": _max_context_hits(),\n                "sources": ctx["sources"],\n                "timings_ms": timings_ms,\n                "context_stats": ctx.get("stats") or {},\n            },\n            "context_text": "",\n            "context_stats": ctx.get("stats") or {},\n        }\n\n    timings_ms["total"] = int((time.time() - start) * 1000)\n\n    return {\n        "success": True,\n        "question": query,\n        "answer": None,\n        "routed_doctypes": routed_doctypes,\n        "results_count": len(matches),\n        "search_time": round(time.time() - start, 2),\n        "user_context": "personalized" if user_profile else "general",\n        "metadata": {\n            "refined_query": refined_query,\n            "filters_used": metadata_filter,\n            "effective_k": effective_k,\n            "effective_context_hits_cap": _max_context_hits(),\n            "sources": ctx["sources"],\n            "timings_ms": timings_ms,\n            "context_stats": ctx.get("stats") or {},\n        },\n        "context_text": context_text,\n        "context_stats": ctx.get("stats") or {},\n    }\n\n\ndef synthesize_vector_search_answer(\n    query: str,\n    vector_search_bundle: Dict[str, Any],\n    user_profile: Optional[Dict[str, Any]] = None,\n    chat_history: Optional[List[Dict[str, str]]] = None,\n) -> Dict[str, Any]:\n    """Generate the final answer from a previously prepared vector-search bundle."""\n    start = time.time()\n    chat_history = chat_history or []\n\n    context_text = vector_search_bundle.get("context_text") or ""\n    if not context_text.strip():\n        return {\n            "question": query,\n            "answer": vector_search_bundle.get("error") or "I couldn't find relevant information for your question.",\n            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],\n            "results_count": vector_search_bundle.get("results_count") or 0,\n            "search_time": vector_search_bundle.get("search_time"),\n            "user_context": vector_search_bundle.get("user_context") or ("personalized" if user_profile else "general"),\n            "error": vector_search_bundle.get("error") or "No vector-search context available.",\n            "metadata": vector_search_bundle.get("metadata") or {},\n        }\n\n    t_synth = time.time()\n    answer = _synthesize_answer(\n        query=query,\n        context_text=context_text,\n        user_profile=user_profile,\n        history=chat_history,\n    )\n\n    metadata = dict(vector_search_bundle.get("metadata") or {})\n    timings_ms = dict(metadata.get("timings_ms") or {})\n    timings_ms["synthesize_answer"] = int((time.time() - t_synth) * 1000)\n    timings_ms["total"] = int((time.time() - start) * 1000) + int((vector_search_bundle.get("metadata") or {}).get("timings_ms", {}).get("total", 0))\n    metadata["timings_ms"] = timings_ms\n\n    return {\n        "question": query,\n        "answer": answer,\n        "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],\n        "results_count": vector_search_bundle.get("results_count") or 0,\n        "search_time": vector_search_bundle.get("search_time"),\n        "user_context": vector_search_bundle.get("user_context") or ("personalized" if user_profile else "general"),\n        "metadata": metadata,\n        "vector_search": {\n            "status": "success" if vector_search_bundle.get("success") else "failed",\n            "raw_status": "vector_search_success" if vector_search_bundle.get("success") else "vector_search_failed",\n            "results_count": vector_search_bundle.get("results_count") or 0,\n            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],\n            "search_time": vector_search_bundle.get("search_time"),\n            "metadata": vector_search_bundle.get("metadata") or {},\n        },\n    }\n\n\n# ======================================================\n# MAIN ENTRY POINT\n# ======================================================\n\ndef answer_from_pinecone(\n    query: str,\n    k: int = 6,\n    route_top_n: int = 5,\n    user_profile: Optional[Dict[str, Any]] = None,\n    content_details: Optional[Dict[str, Any]] = None,\n    chat_history: Optional[List[Dict[str, str]]] = None,\n    refined_query: Optional[str] = None,\n) -> Dict[str, Any]:\n\n    chat_history = chat_history or []\n    start = time.time()\n    timings_ms: Dict[str, int] = {}\n\n    def _stamp(stage_name: str, t0: float):\n        timings_ms[stage_name] = int((time.time() - t0) * 1000)\n\n    print("> Starting Vector RAG process...")\n\n    effective_k = _effective_k(k)\n\n    # 1. Refine query â€” skip if the router already refined it upstream.\n    t_refine = time.time()\n    if refined_query is None:\n        refined_query = _refine_query_with_history(query, chat_history)\n    else:\n        print(f"> Using pre-refined query from router: {refined_query}")\n    _stamp("refine_query", t_refine)\n\n    # 2. Build metadata filters\n    t_filters = time.time()\n    metadata_filter = _build_metadata_filter(user_profile, content_details)\n    _stamp("build_filters", t_filters)\n\n    # 3. Pinecone search\n    t_search = time.time()\n    search_result = search_auto_namespaces(\n        q=refined_query,\n        k=effective_k,\n        route_top_n=route_top_n,\n        filters=metadata_filter,\n    )\n    _stamp("vector_search", t_search)\n\n    matches = search_result.get("matches") or []\n    routed_doctypes = search_result.get("routed_doctypes") or []\n\n    if not matches:\n        timings_ms["total"] = int((time.time() - start) * 1000)\n        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")\n        return {\n            "question": query,\n            "answer": "I couldn't find relevant information for your question.",\n            "routed_doctypes": routed_doctypes,\n            "results_count": 0,\n            "search_time": round(time.time() - start, 2),\n            "timings_ms": timings_ms,\n        }\n\n    # 4. Build context\n    t_context = time.time()\n    ctx = _build_context_from_hits(matches, max_chars=_max_context_chars())\n    _stamp("build_context", t_context)\n    context_text = ctx["context_text"]\n\n    if not context_text.strip():\n        timings_ms["total"] = int((time.time() - start) * 1000)\n        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")\n        return {\n            "question": query,\n            "answer": "I found references but not enough details to answer confidently.",\n            "routed_doctypes": routed_doctypes,\n            "results_count": len(matches),\n            "search_time": round(time.time() - start, 2),\n            "timings_ms": timings_ms,\n            "context_stats": ctx.get("stats") or {},\n        }\n\n    # 5. Synthesize answer\n    t_synth = time.time()\n    answer = _synthesize_answer(\n        query=query,\n        context_text=context_text,\n        user_profile=user_profile,\n        history=chat_history,\n    )\n    _stamp("synthesize_answer", t_synth)\n\n    elapsed = round(time.time() - start, 2)\n    timings_ms["total"] = int((time.time() - start) * 1000)\n    print(f"> RAG timings (ms): {json.dumps(timings_ms)}")\n    print(f"> RAG context stats: {json.dumps(ctx.get('stats') or {})}")\n\n    return {\n        "question": query,\n        "answer": answer,\n        "routed_doctypes": routed_doctypes,\n        "results_count": len(matches),\n        "search_time": elapsed,\n        "user_context": "personalized" if user_profile else "general",\n        "metadata": {\n            "refined_query": refined_query,\n            "filters_used": metadata_filter,\n            "effective_k": effective_k,\n            "effective_context_hits_cap": _max_context_hits(),\n            "sources": ctx["sources"],\n            "timings_ms": timings_ms,\n            "context_stats": ctx.get("stats") or {},\n        },\n    }\n\n\n\n# -------- Bench CLI --------\ndef cli(q: str, k: int = 6, route_top_n: int = 4):\n    """\n    Bench command to test the RAG pipeline.\n\n    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points'}"\n    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Can you provide a summary of the video titled Needs First, Wants Later (2024)'}"\n    """\n    return answer_from_pinecone(query=q, k=k, route_top_n=route_top_n)\n\n
+"""
+Vector RAG Engine for TAP AI
+
+Conversational query refinement
+Pinecone routing with optional grade/batch/course filtering
+Robust context construction from DB (batched + char budget)
+Personalized answer synthesis
+Rich metadata for debugging & observability
+DynamicConfig compatible
+"""
+
+import json
+import time
+from typing import Dict, Any, List, Optional
+
+import frappe
+
+from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.services.prompt_bank import get_system_message_for_context
+from tap_ai.services.pinecone_store import (
+    search_auto_namespaces,
+    get_db_columns_for_doctype,
+    embed_query_cached,
+    _record_to_text,
+)
+
+
+# ======================================================
+# QUERY REFINER (FROM EARLIER VERSION – KEPT)
+# ======================================================
+
+REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand.
+
+- If already standalone, return as is
+- Incorporate relevant context from history
+- Do NOT answer the question
+
+Return ONLY the refined question.
+"""
+
+_FOLLOW_UP_MARKERS = (
+    "it", "this", "that", "these", "those", "they", "them", "he", "she", "yes",
+    "first one", "second one", "third one", "the above", "previous", "earlier",
+    "same", "that one", "explain more", "summarize that", "what about", "how about",
+)
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _should_refine_query(query: str, history: List[Dict[str, str]]) -> bool:
+    """Refine only likely follow-up queries; skip standalone questions to save ~1-2s."""
+    if not history:
+        return False
+
+    force_refine = str(get_config("rag_force_query_refine") or "").strip().lower()
+    if force_refine in ("1", "true", "yes", "on"):
+        return True
+
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+
+    if any(marker in q for marker in _FOLLOW_UP_MARKERS):
+        return True
+
+    if q.startswith(("and ", "then ", "also ", "so ")):
+        return True
+
+    # Standalone definition/factual queries usually do not need refinement.
+    return False
+
+def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:
+    if not _should_refine_query(query, history):
+        return query
+
+    history_turns = max(1, _to_int(get_config("rag_refine_history_turns") or 2, 2))
+    max_chars_per_msg = max(80, _to_int(get_config("rag_refine_message_chars") or 240, 240))
+    recent_history = history[-history_turns:]
+
+    if not recent_history:
+        return query
+
+    formatted_history = "\n".join(
+        f"{msg.get('role', 'user')}: {(msg.get('content') or '')[:max_chars_per_msg]}"
+        for msg in recent_history
+    )
+
+    prompt = (
+        f"CHAT HISTORY:\n{formatted_history}\n\n"
+        f"FOLLOW-UP QUESTION:\n{query}\n\n"
+        f"REFINED STANDALONE QUESTION:"
+    )
+
+    try:
+        refined = llm_invoke_cached(
+            [("system", REFINER_PROMPT), ("user", prompt)],
+            model="gpt-4o-mini",
+            temperature=0.0,
+            max_tokens=120,
+        )
+        print(f"> Refined Query: {refined}")
+        return refined
+    except Exception as e:
+        frappe.log_error(f"Query refiner failed: {e}")
+        return query
+
+
+# ======================================================
+# METADATA FILTER BUILDER (MENTOR VERSION – KEPT)
+# ======================================================
+
+def _build_metadata_filter(
+    user_profile: Optional[Dict] = None,
+    content_details: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
+    filters = {}
+
+    if user_profile:
+        if user_profile.get("grade"):
+            filters["grade"] = user_profile["grade"]
+        if user_profile.get("batch"):
+            filters["batch"] = user_profile["batch"]
+        if user_profile.get("current_enrollment", {}).get("course"):
+            filters["course"] = user_profile["current_enrollment"]["course"]
+
+    if content_details and content_details.get("type"):
+        filters["content_type"] = content_details["type"]
+
+    return filters or None
+
+
+# ======================================================
+# CONTEXT BUILDING
+# ======================================================
+
+def _max_context_hits() -> int:
+    """Cap DB hydration to top-N vector hits to reduce latency."""
+    try:
+        configured = int(get_config("rag_max_context_hits") or 6)
+        return max(1, min(configured, 6))
+    except Exception:
+        return 6
+
+
+def _effective_k(k: int) -> int:
+    """Hard-limit top-k to 6 for predictable latency."""
+    try:
+        parsed = int(k)
+    except Exception:
+        parsed = 6
+    return max(1, min(parsed, 6))
+
+
+def _context_fields_for_doctype(doctype: str) -> List[str]:
+    """Fetch a compact field list for context hydration, with cache."""
+    cache_key = f"rag_context_fields:{doctype}"
+    cached = frappe.cache().get(cache_key)
+    if cached:
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8", errors="ignore")
+        try:
+            fields = json.loads(cached)
+            if isinstance(fields, list) and fields:
+                return fields
+        except Exception:
+            pass
+
+    columns = get_db_columns_for_doctype(doctype) or []
+    columns_set = set(columns)
+
+    preferred = [
+        "name", "title", "subject", "topic", "description", "content",
+        "instructions", "learning_objective", "evaluation_points", "rubric",
+        "objective", "summary", "course", "grade", "batch", "modified",
+    ]
+    selected = [f for f in preferred if f in columns_set]
+
+    # Keep at most 15 columns for context hydration; fallback to first columns.
+    if not selected:
+        selected = ["name"] + [c for c in columns if c != "name"][:14]
+
+    # Ensure unique, stable order.
+    seen = set()
+    final_fields = []
+    for f in selected:
+        if f not in seen:
+            seen.add(f)
+            final_fields.append(f)
+
+    frappe.cache().set(cache_key, json.dumps(final_fields), ex=3600)
+    return final_fields
+
+
+def _build_context_from_hits(
+    hits: List[Dict[str, Any]],
+    max_chars: int = 12000
+) -> Dict[str, Any]:
+    """
+     OPTIMIZATION: Batch DB queries by doctype (Phase 2)
+    Instead of: 15 hits = 15 DB queries
+    Now does: 2-3 doctypes = 2-3 batch queries
+    """
+    context_chunks: List[str] = []
+    sources: List[Dict[str, Any]] = []
+    used_chars = 0
+    metadata_hits_used = 0
+    db_queries = 0
+    meta_cache: Dict[str, Any] = {}
+
+    # Hydrate context only for top-N hits; deeper hits are often low signal.
+    top_hits = (hits or [])[: _max_context_hits()]
+    
+    # Group hits by doctype
+    hits_by_doctype: Dict[str, List] = {}
+    for hit in top_hits:
+        meta = hit.get("metadata") or {}
+        doctype = meta.get("doctype")
+        record_ids = meta.get("record_ids") or []
+        
+        if not doctype or not record_ids:
+            continue
+        
+        if doctype not in hits_by_doctype:
+            hits_by_doctype[doctype] = []
+        
+        hits_by_doctype[doctype].append((hit, record_ids))
+    
+    # Fast path: if Pinecone metadata already carries a preview chunk, avoid DB hit.
+    pending_hits_by_doctype: Dict[str, List] = {}
+    for doctype, hits_group in hits_by_doctype.items():
+        for hit, record_ids in hits_group:
+            if used_chars >= max_chars:
+                break
+
+            meta = hit.get("metadata") or {}
+            preview = (meta.get("context_preview") or "").strip()
+            if preview:
+                chunk = f"DocType: {doctype}\nID: {record_ids[0]}\n{preview}"
+                if used_chars + len(chunk) > max_chars:
+                    continue
+                context_chunks.append(chunk)
+                metadata_hits_used += 1
+                sources.append({
+                    "doctype": doctype,
+                    "id": record_ids[0],
+                    "score": hit.get("score"),
+                })
+                used_chars += len(chunk)
+                continue
+
+            pending_hits_by_doctype.setdefault(doctype, []).append((hit, record_ids))
+
+    # Single batch query per doctype for misses
+    from tap_ai.utils.remote_db import get_remote_all
+    
+    for doctype, hits_group in pending_hits_by_doctype.items():
+        if used_chars >= max_chars:
+            break
+        
+        try:
+            # Collect all unique record IDs for this doctype
+            all_record_ids = []
+            for hit, record_ids in hits_group:
+                all_record_ids.extend(record_ids)
+            
+            all_record_ids = list(set(all_record_ids))  # Deduplicate
+            
+            if not all_record_ids:
+                continue
+            
+            # ✅ ONE query per doctype instead of ONE per hit
+            fields = _context_fields_for_doctype(doctype)
+            rows = get_remote_all(
+                doctype,
+                fields=fields,
+                filters={"name": ["in", all_record_ids]},
+            )
+            db_queries += 1
+            
+            # Map rows by name for quick lookup
+            rows_dict = {row.get("name"): row for row in rows}
+            
+            # Build context from batched results
+            for hit, record_ids in hits_group:
+                if used_chars >= max_chars:
+                    break
+                
+                for record_id in record_ids:
+                    if used_chars >= max_chars:
+                        break
+                    
+                    if record_id not in rows_dict:
+                        continue
+                    
+                    row = rows_dict[record_id]
+                    chunk = _record_to_text(doctype, row, meta_cache=meta_cache)
+                    
+                    if used_chars + len(chunk) > max_chars:
+                        break
+                    
+                    context_chunks.append(chunk)
+                    sources.append({
+                        "doctype": doctype,
+                        "id": row.get("name"),
+                        "score": hit.get("score"),
+                    })
+                    used_chars += len(chunk)
+        
+        except Exception as e:
+            frappe.log_error(f"Context build failed for {doctype}: {e}")
+
+    return {
+        "context_text": "\n\n---\n\n".join(context_chunks),
+        "sources": sources,
+        "stats": {
+            "total_hits_in": len(hits or []),
+            "top_hits_used": len(top_hits),
+            "metadata_hits_used": metadata_hits_used,
+            "db_queries": db_queries,
+            "context_chars": used_chars,
+        },
+    }
+
+
+def _max_context_chars() -> int:
+    """Bound synthesis context size to reduce token latency."""
+    return max(1200, _to_int(get_config("rag_max_context_chars") or 6000, 6000))
+
+
+# ======================================================
+# ANSWER SYNTHESIS
+# ======================================================
+
+def _synthesize_answer(
+    query: str,
+    context_text: str,
+    user_profile: Optional[Dict] = None,
+    history: Optional[List[Dict[str, str]]] = None
+) -> str:
+    """
+     OPTIMIZATION: Use cached LLM invoke (Phase 1)
+    """
+    history = history or []
+    synthesis_history_turns = max(0, _to_int(get_config("rag_synthesis_history_turns") or 1, 1))
+    synthesis_temperature = _to_float(get_config("rag_synthesis_temperature") or 0.0, 0.0)
+    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 500, 500))
+    synthesis_model = get_config("rag_synthesis_model") or "gpt-4o-mini"
+
+    try:
+        persona = get_system_message_for_context(user_profile=user_profile)
+    except Exception:
+        persona = ""
+
+    # TAP Buddy persona is the sole system message; fall back to a minimal prompt.
+    system_prompt = persona or "You are a helpful educational AI assistant."
+
+    messages = [["system", system_prompt]]
+    for msg in history[-synthesis_history_turns:]:
+        messages.append([msg["role"], msg["content"]])
+    messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])
+
+    try:
+        answer = llm_invoke_cached(
+            messages,
+            model=synthesis_model,
+            temperature=synthesis_temperature,
+            max_tokens=synthesis_max_tokens,
+        )
+        return answer.strip() if answer else "I couldn't generate an answer."
+    except Exception as e:
+        frappe.log_error(f"RAG synthesis failed: {e}")
+        return "There was an error while generating the answer."
+
+
+def retrieve_vector_search(
+    query: str,
+    k: int = 6,
+    route_top_n: int = 5,
+    user_profile: Optional[Dict[str, Any]] = None,
+    content_details: Optional[Dict[str, Any]] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    refined_query: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Run the vector-search side of the RAG pipeline without answer synthesis.
+
+    This is used when the request needs to expose vector search completion as a
+    separate observable phase before the final answer is synthesized.
+    """
+    chat_history = chat_history or []
+    start = time.time()
+    timings_ms: Dict[str, int] = {}
+
+    def _stamp(stage_name: str, t0: float):
+        timings_ms[stage_name] = int((time.time() - t0) * 1000)
+
+    effective_k = _effective_k(k)
+
+    # Skip refinement if the router already refined it upstream.
+    t_refine = time.time()
+    if refined_query is None:
+        refined_query = _refine_query_with_history(query, chat_history)
+    _stamp("refine_query", t_refine)
+
+    t_filters = time.time()
+    metadata_filter = _build_metadata_filter(user_profile, content_details)
+    _stamp("build_filters", t_filters)
+
+    t_search = time.time()
+    search_result = search_auto_namespaces(
+        q=refined_query,
+        k=effective_k,
+        route_top_n=route_top_n,
+        filters=metadata_filter,
+    )
+    _stamp("vector_search", t_search)
+
+    matches = search_result.get("matches") or []
+    routed_doctypes = search_result.get("routed_doctypes") or []
+
+    if not matches:
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        return {
+            "success": False,
+            "question": query,
+            "answer": None,
+            "routed_doctypes": routed_doctypes,
+            "results_count": 0,
+            "search_time": round(time.time() - start, 2),
+            "user_context": "personalized" if user_profile else "general",
+            "error": "I couldn't find relevant information for your question.",
+            "metadata": {
+                "refined_query": refined_query,
+                "filters_used": metadata_filter,
+                "effective_k": effective_k,
+                "effective_context_hits_cap": _max_context_hits(),
+                "sources": [],
+                "timings_ms": timings_ms,
+                "context_stats": {},
+            },
+            "context_text": "",
+            "context_stats": {},
+        }
+
+    t_context = time.time()
+    ctx = _build_context_from_hits(matches, max_chars=_max_context_chars())
+    _stamp("build_context", t_context)
+    context_text = ctx["context_text"]
+
+    if not context_text.strip():
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        return {
+            "success": False,
+            "question": query,
+            "answer": None,
+            "routed_doctypes": routed_doctypes,
+            "results_count": len(matches),
+            "search_time": round(time.time() - start, 2),
+            "user_context": "personalized" if user_profile else "general",
+            "error": "I found references but not enough details to answer confidently.",
+            "metadata": {
+                "refined_query": refined_query,
+                "filters_used": metadata_filter,
+                "effective_k": effective_k,
+                "effective_context_hits_cap": _max_context_hits(),
+                "sources": ctx["sources"],
+                "timings_ms": timings_ms,
+                "context_stats": ctx.get("stats") or {},
+            },
+            "context_text": "",
+            "context_stats": ctx.get("stats") or {},
+        }
+
+    timings_ms["total"] = int((time.time() - start) * 1000)
+
+    return {
+        "success": True,
+        "question": query,
+        "answer": None,
+        "routed_doctypes": routed_doctypes,
+        "results_count": len(matches),
+        "search_time": round(time.time() - start, 2),
+        "user_context": "personalized" if user_profile else "general",
+        "metadata": {
+            "refined_query": refined_query,
+            "filters_used": metadata_filter,
+            "effective_k": effective_k,
+            "effective_context_hits_cap": _max_context_hits(),
+            "sources": ctx["sources"],
+            "timings_ms": timings_ms,
+            "context_stats": ctx.get("stats") or {},
+        },
+        "context_text": context_text,
+        "context_stats": ctx.get("stats") or {},
+    }
+
+
+def synthesize_vector_search_answer(
+    query: str,
+    vector_search_bundle: Dict[str, Any],
+    user_profile: Optional[Dict[str, Any]] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Generate the final answer from a previously prepared vector-search bundle."""
+    start = time.time()
+    chat_history = chat_history or []
+
+    context_text = vector_search_bundle.get("context_text") or ""
+    if not context_text.strip():
+        return {
+            "question": query,
+            "answer": vector_search_bundle.get("error") or "I couldn't find relevant information for your question.",
+            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+            "results_count": vector_search_bundle.get("results_count") or 0,
+            "search_time": vector_search_bundle.get("search_time"),
+            "user_context": vector_search_bundle.get("user_context") or ("personalized" if user_profile else "general"),
+            "error": vector_search_bundle.get("error") or "No vector-search context available.",
+            "metadata": vector_search_bundle.get("metadata") or {},
+        }
+
+    t_synth = time.time()
+    answer = _synthesize_answer(
+        query=query,
+        context_text=context_text,
+        user_profile=user_profile,
+        history=chat_history,
+    )
+
+    metadata = dict(vector_search_bundle.get("metadata") or {})
+    timings_ms = dict(metadata.get("timings_ms") or {})
+    timings_ms["synthesize_answer"] = int((time.time() - t_synth) * 1000)
+    timings_ms["total"] = int((time.time() - start) * 1000) + int((vector_search_bundle.get("metadata") or {}).get("timings_ms", {}).get("total", 0))
+    metadata["timings_ms"] = timings_ms
+
+    return {
+        "question": query,
+        "answer": answer,
+        "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+        "results_count": vector_search_bundle.get("results_count") or 0,
+        "search_time": vector_search_bundle.get("search_time"),
+        "user_context": vector_search_bundle.get("user_context") or ("personalized" if user_profile else "general"),
+        "metadata": metadata,
+        "vector_search": {
+            "status": "success" if vector_search_bundle.get("success") else "failed",
+            "raw_status": "vector_search_success" if vector_search_bundle.get("success") else "vector_search_failed",
+            "results_count": vector_search_bundle.get("results_count") or 0,
+            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+            "search_time": vector_search_bundle.get("search_time"),
+            "metadata": vector_search_bundle.get("metadata") or {},
+        },
+    }
+
+
+# ======================================================
+# MAIN ENTRY POINT
+# ======================================================
+
+def answer_from_pinecone(
+    query: str,
+    k: int = 6,
+    route_top_n: int = 5,
+    user_profile: Optional[Dict[str, Any]] = None,
+    content_details: Optional[Dict[str, Any]] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    refined_query: Optional[str] = None,
+) -> Dict[str, Any]:
+
+    chat_history = chat_history or []
+    start = time.time()
+    timings_ms: Dict[str, int] = {}
+
+    def _stamp(stage_name: str, t0: float):
+        timings_ms[stage_name] = int((time.time() - t0) * 1000)
+
+    print("> Starting Vector RAG process...")
+
+    effective_k = _effective_k(k)
+
+    # 1. Refine query — skip if the router already refined it upstream.
+    t_refine = time.time()
+    if refined_query is None:
+        refined_query = _refine_query_with_history(query, chat_history)
+    else:
+        print(f"> Using pre-refined query from router: {refined_query}")
+    _stamp("refine_query", t_refine)
+
+    # 2. Build metadata filters
+    t_filters = time.time()
+    metadata_filter = _build_metadata_filter(user_profile, content_details)
+    _stamp("build_filters", t_filters)
+
+    # 3. Pinecone search
+    t_search = time.time()
+    search_result = search_auto_namespaces(
+        q=refined_query,
+        k=effective_k,
+        route_top_n=route_top_n,
+        filters=metadata_filter,
+    )
+    _stamp("vector_search", t_search)
+
+    matches = search_result.get("matches") or []
+    routed_doctypes = search_result.get("routed_doctypes") or []
+
+    if not matches:
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
+        return {
+            "question": query,
+            "answer": "I couldn't find relevant information for your question.",
+            "routed_doctypes": routed_doctypes,
+            "results_count": 0,
+            "search_time": round(time.time() - start, 2),
+            "timings_ms": timings_ms,
+        }
+
+    # 4. Build context
+    t_context = time.time()
+    ctx = _build_context_from_hits(matches, max_chars=_max_context_chars())
+    _stamp("build_context", t_context)
+    context_text = ctx["context_text"]
+
+    if not context_text.strip():
+        timings_ms["total"] = int((time.time() - start) * 1000)
+        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
+        return {
+            "question": query,
+            "answer": "I found references but not enough details to answer confidently.",
+            "routed_doctypes": routed_doctypes,
+            "results_count": len(matches),
+            "search_time": round(time.time() - start, 2),
+            "timings_ms": timings_ms,
+            "context_stats": ctx.get("stats") or {},
+        }
+
+    # 5. Synthesize answer
+    t_synth = time.time()
+    answer = _synthesize_answer(
+        query=query,
+        context_text=context_text,
+        user_profile=user_profile,
+        history=chat_history,
+    )
+    _stamp("synthesize_answer", t_synth)
+
+    elapsed = round(time.time() - start, 2)
+    timings_ms["total"] = int((time.time() - start) * 1000)
+    print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
+    print(f"> RAG context stats: {json.dumps(ctx.get('stats') or {})}")
+
+    return {
+        "question": query,
+        "answer": answer,
+        "routed_doctypes": routed_doctypes,
+        "results_count": len(matches),
+        "search_time": elapsed,
+        "user_context": "personalized" if user_profile else "general",
+        "metadata": {
+            "refined_query": refined_query,
+            "filters_used": metadata_filter,
+            "effective_k": effective_k,
+            "effective_context_hits_cap": _max_context_hits(),
+            "sources": ctx["sources"],
+            "timings_ms": timings_ms,
+            "context_stats": ctx.get("stats") or {},
+        },
+    }
+
+
+
+# -------- Bench CLI --------
+def cli(q: str, k: int = 6, route_top_n: int = 4):
+    """
+    Bench command to test the RAG pipeline.
+
+    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points'}"
+    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Can you provide a summary of the video titled Needs First, Wants Later (2024)'}"
+    """
+    return answer_from_pinecone(query=q, k=k, route_top_n=route_top_n)
