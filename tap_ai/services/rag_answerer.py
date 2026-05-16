@@ -51,7 +51,7 @@ Return ONLY the refined question.
 """
 
 _FOLLOW_UP_MARKERS = (
-    "it", "this", "that", "these", "those", "they", "them", "he", "she",
+    "it", "this", "that", "these", "those", "they", "them", "he", "she", "yes",
     "first one", "second one", "third one", "the above", "previous", "earlier",
     "same", "that one", "explain more", "summarize that", "what about", "how about",
 )

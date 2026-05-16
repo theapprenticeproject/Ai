@@ -1,4 +1,4 @@
-# tap_ai/services/router.py
+﻿# tap_ai/services/router.py
 """
 TAP AI Router
 
@@ -260,14 +260,25 @@ def process_query(
         content_str = f"Content: {content_details.get('title', 'Unknown')}"
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
-    # -------- Choose tool --------
+    # -------- Query refinement (use history to expand follow-ups) --------
+    refined_query = query
+    try:
+        # Import locally to avoid circular imports at module load
+        from tap_ai.services.rag_answerer import _refine_query_with_history
+
+        refined_query = _refine_query_with_history(query, chat_history or []) or query
+        if not isinstance(refined_query, str):
+            refined_query = str(refined_query)
+    except Exception as e:
+        frappe.log_error(f"Router: query refiner failed: {e}")
+
+    # -------- Choose tool (routing uses refined query) --------
+    routing_ms = 0
     if primary_tool is None:
         routing_start = time.perf_counter()
-        primary_tool = choose_tool(query, user_context)
+        primary_tool = choose_tool(refined_query, user_context)
         routing_ms = int((time.perf_counter() - routing_start) * 1000)
-    else:
-        routing_ms = 0
-    print(f"> Selected Primary Tool: {primary_tool}")
+        print(f"> Selected Primary Tool: {primary_tool}")
 
     fallback_used = False
     result = {}
@@ -344,14 +355,15 @@ def process_query(
         )
 
         if _is_failure(result):
-            print("> SQL failure detected â†’ Falling back to RAG")
+            print("> SQL failure detected → Falling back to RAG")
             fallback_used = True
             interim = "Searching, please wait a few more seconds..."
             result = answer_from_pinecone(
                 query,
                 user_profile=user_profile,
                 content_details=content_details,
-                chat_history=chat_history
+                chat_history=chat_history,
+                refined_query=refined_query,
             )
             result["interim_message"] = interim
 
@@ -361,7 +373,8 @@ def process_query(
             query,
             user_profile=user_profile,
             content_details=content_details,
-            chat_history=chat_history
+            chat_history=chat_history,
+            refined_query=refined_query,
         )
 
     processing_ms = int((time.perf_counter() - process_start) * 1000)
@@ -650,3 +663,4 @@ def cli(q: str, user_id: str = "default_user"):
     print(json.dumps(out, indent=2, ensure_ascii=False))
 
     return out
+
