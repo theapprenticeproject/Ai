@@ -172,6 +172,7 @@ def process_query(
     context: Optional[Dict[str, Any]] = None,
     voice_mode: bool = False,
     primary_tool: Optional[str] = None,
+    refined_query: Optional[str] = None,
 ) -> dict:
 
     chat_history = chat_history or []
@@ -195,17 +196,16 @@ def process_query(
         content_str = f"Content: {content_details.get('title', 'Unknown')}"
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
-    # -------- Query refinement (use history to expand follow-ups) --------
-    refined_query = query
-    try:
-        # Import locally to avoid circular imports at module load
-        from tap_ai.services.rag_answerer import _refine_query_with_history
-
-        refined_query = _refine_query_with_history(query, chat_history or []) or query
-        if not isinstance(refined_query, str):
-            refined_query = str(refined_query)
-    except Exception as e:
-        frappe.log_error(f"Router: query refiner failed: {e}")
+    # -------- Query refinement (skip if already refined by the worker) --------
+    if not refined_query:
+        refined_query = query
+        try:
+            from tap_ai.services.rag_answerer import _refine_query_with_history
+            refined_query = _refine_query_with_history(query, chat_history or []) or query
+            if not isinstance(refined_query, str):
+                refined_query = str(refined_query)
+        except Exception as e:
+            frappe.log_error(f"Router: query refiner failed: {e}")
 
     # -------- Choose tool (routing uses refined query) --------
     routing_ms = 0
@@ -273,13 +273,10 @@ def process_query(
             )
 
         processing_ms = int((time.perf_counter() - process_start) * 1000)
-        return _with_meta(
-            result,
-            query,
-            "knowledge_bank",
-            False,
-            timing_ms={"router": routing_ms, "processing_total": processing_ms},
-        )
+        timings = {"processing_total": processing_ms}
+        if routing_ms:
+            timings["route_ms"] = routing_ms
+        return _with_meta(result, query, "knowledge_bank", False, timing_ms=timings)
 
     if primary_tool == "text_to_sql":
         result = answer_from_sql(
@@ -313,13 +310,10 @@ def process_query(
         )
 
     processing_ms = int((time.perf_counter() - process_start) * 1000)
-    return _with_meta(
-        result,
-        query,
-        primary_tool,
-        fallback_used,
-        timing_ms={"router": routing_ms, "processing_total": processing_ms},
-    )
+    timings = {"processing_total": processing_ms}
+    if routing_ms:
+        timings["route_ms"] = routing_ms
+    return _with_meta(result, query, primary_tool, fallback_used, timing_ms=timings)
 
 
 # ======================================================

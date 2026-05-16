@@ -14,6 +14,7 @@ from tap_ai.services.router import (
 from tap_ai.services.rag_answerer import (
     retrieve_vector_search,
     synthesize_vector_search_answer,
+    _refine_query_with_history,
 )
 from tap_ai.utils.mq import publish_to_queue
 
@@ -54,10 +55,12 @@ def _apply_end_to_end_timing(state_dict: dict, metadata: dict) -> dict:
         return metadata
 
     total_e2e_ms = int(time.time() * 1000) - int(started_at_ms)
-    timings_ms = dict(metadata.get("timings_ms") or {})
+    # Merge worker-side timings (refine_query_ms, route_ms) with process result timings
+    state_timings = (state_dict.get("metadata") or {}).get("timings_ms") or {}
+    timings_ms = {**state_timings, **dict(metadata.get("timings_ms") or {})}
     processing_ms = timings_ms.get("processing_total") or timings_ms.get("knowledge_bank") or timings_ms.get("direct_llm") or timings_ms.get("total")
     stt_ms = state_dict.get("stt_timing_ms") or timings_ms.get("stt") or 0
-    router_ms = state_dict.get("router_timing_ms") or timings_ms.get("router_precheck") or 0
+    router_ms = state_dict.get("router_timing_ms") or timings_ms.get("route_ms") or timings_ms.get("router_precheck") or 0
 
     timings_ms["end_to_end"] = total_e2e_ms
     timings_ms["queue_wait"] = max(total_e2e_ms - int(processing_ms or 0) - int(stt_ms or 0) - int(router_ms or 0), 0)
@@ -66,7 +69,7 @@ def _apply_end_to_end_timing(state_dict: dict, metadata: dict) -> dict:
     if stt_ms:
         timings_ms["stt"] = int(stt_ms)
     if router_ms:
-        timings_ms["router_precheck"] = int(router_ms)
+        timings_ms["route_ms"] = int(router_ms)
     timings_ms["total"] = total_e2e_ms
 
     metadata = dict(metadata)
@@ -211,6 +214,10 @@ def _process_vector_search_synthesis(payload: dict) -> None:
         )
     else:
         state_dict = _load_request_state(request_id)
+        # Merge worker-side timings (refine_query_ms, route_ms) into final metadata
+        state_timings = (state_dict.get("metadata") or {}).get("timings_ms") or {}
+        metadata.setdefault("timings_ms", {})
+        metadata["timings_ms"] = {**state_timings, **metadata["timings_ms"]}
         state_dict.update({
             "status": "success",
             "answer": answer,
@@ -252,35 +259,60 @@ def process_message(ch, method, properties, body):
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    routing_start = time.perf_counter()
-    primary_tool = choose_tool(query)
-    router_ms = int((time.perf_counter() - routing_start) * 1000)
-
-    print(f"\n[*] [LLM Worker] Picked up task: {request_id} | Query: '{query}' | Session: {session_id} | Tool: {primary_tool}")
+    print(f"\n[*] [LLM Worker] Picked up task: {request_id} | Query: '{query}' | Session: {session_id}")
 
     try:
-        # 1. Update status to provide real-time UI feedback
+        # 1. Mark as in-progress for real-time UI feedback
         state_dict = _load_request_state(request_id)
-        state_dict["tool"] = primary_tool
-        state_dict["router_timing_ms"] = router_ms
-        state_dict["router_decision"] = {
-            "tool": primary_tool,
-            "status": "success",
-        }
         state_dict["status"] = "generating_answer"
         state_dict["session_id"] = session_id
         state_dict.setdefault("metadata", {})
         state_dict["metadata"].setdefault("timings_ms", {})
-        state_dict["metadata"]["timings_ms"]["router_precheck"] = router_ms
         _save_request_state(request_id, state_dict)
 
-        # 2. Fetch history using your existing router helper
+        # 2. Load history FIRST — needed for query refinement
         chat_history = _get_history_from_cache(user_id, session_id=session_id)
 
-        # 3. Split vector search into retrieval and synthesis when routed there
+        # 3. Refine query with conversation context
+        refined_query = query
+        refine_start = time.perf_counter()
+        try:
+            result = _refine_query_with_history(query, chat_history) or query
+            if isinstance(result, str):
+                refined_query = result
+        except Exception:
+            pass
+        refine_ms = int((time.perf_counter() - refine_start) * 1000)
+
+        # 4. Route on refined query (not raw query)
+        route_start = time.perf_counter()
+        primary_tool = choose_tool(refined_query)
+        route_ms = int((time.perf_counter() - route_start) * 1000)
+
+        # KB guard: content/navigation queries don't belong in knowledge_bank
+        _KB_CONTENT_WORDS = ("activity", "video", "topic", "course", "explain", "what is", "lesson", "quiz", "assignment")
+        if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in _KB_CONTENT_WORDS):
+            print(f"> KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
+            primary_tool = "vector_search"
+
+        # 5. Update state with routing decision and timings
+        state_dict = _load_request_state(request_id)
+        state_dict["tool"] = primary_tool
+        state_dict["router_timing_ms"] = route_ms
+        state_dict["router_decision"] = {"tool": primary_tool, "status": "success"}
+        state_dict["metadata"]["timings_ms"].update({
+            "refine_query_ms": refine_ms,
+            "route_ms": route_ms,
+        })
+        if refined_query != query:
+            state_dict["metadata"]["refined_query"] = refined_query
+        _save_request_state(request_id, state_dict)
+
+        # 6. Execute vector search (retrieval + async synthesis)
         if primary_tool == "vector_search":
             vector_search_bundle = retrieve_vector_search(
                 query=query,
+                refined_query=refined_query,
                 chat_history=chat_history,
             )
 
@@ -335,12 +367,13 @@ def process_message(ch, method, properties, body):
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        # 4. Run the existing router logic for SQL/direct flows
+        # 7. Run the existing router logic for SQL/direct flows
         out = process_query(
             query=query,
             chat_history=chat_history,
             voice_mode=is_voice,
             primary_tool=primary_tool,
+            refined_query=refined_query,
         )
         answer = out.get("answer", "")
         resolved_tool = _resolve_result_tool(out, primary_tool)
