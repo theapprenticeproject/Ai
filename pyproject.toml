@@ -19,6 +19,13 @@ build-backend = "flit_core.buildapi"
 [tool.bench.dev-dependencies]
 # package_name = "~=1.1.0"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--import-mode=importlib"
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py310"
