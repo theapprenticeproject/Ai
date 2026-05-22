@@ -167,6 +167,15 @@ graph TD
 
 This engine excels at conceptual queries by retrieving semantically relevant documents.
 
+```mermaid
+graph TD
+    A[User Query + Chat History] --> B{LLM: Refine Query}
+    B --> C["1. Select DocTypes"]
+    C --> D["2. Semantic Search"]
+    D --> E["3. Fetch Full Text"]
+    E --> F[Rich Context Chunks]
+```
+
 #### Knowledge Bank Tool: From Curated Phrase to Direct Answer
 
 This tool handles short, high-confidence conversational intents like greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns.
@@ -177,15 +186,6 @@ graph TD
   B --> C{Confidence threshold met?}
   C -->|Yes| D[Return stored TAP response]
   C -->|No| E[Fallback to Direct LLM]
-```
-
-```mermaid
-graph TD
-    A[User Query + Chat History] --> B{LLM: Refine Query}
-    B --> C["1. Select DocTypes"]
-    C --> D["2. Semantic Search"]
-    D --> E["3. Fetch Full Text"]
-    E --> F[Rich Context Chunks]
 ```
 
 ---

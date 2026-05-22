@@ -63,6 +63,9 @@ FAST_SQL_PATTERNS = re.compile(
 # KNOWLEDGE BANK INTENT PATTERNS
 # ======================================================
 
+# Full KB pattern set — used by router.py on the REFINED query.
+# Includes context-dependent words (yes/ok/done) which are safe to match
+# on a refined query because refinement has already resolved their meaning.
 FAST_KB_PATTERNS = re.compile(
     r"""
     # Greetings & Sign-offs
@@ -110,12 +113,12 @@ FAST_KB_PATTERNS = re.compile(
         congratulations|celebrate
     )
     |
-    # Continue / Ready
+    # Continue / Ready  (context-dependent — only safe after refinement)
     (?:
         \b(?:yes|ready|continue|chalo|haan|ok)\b
     )
     |
-    # Very short / unclear
+    # Very short / unclear  (context-dependent — only safe after refinement)
     (?:
         \b(?:k|ok|acha|thik\s+hai|hmm|sure|yep|yup)\b
     )
@@ -123,11 +126,47 @@ FAST_KB_PATTERNS = re.compile(
     re.I | re.X | re.UNICODE,
 )
 
+# Unconditional KB pattern — used by llm_worker.py on the RAW query BEFORE refinement.
+# Only includes intents whose meaning is fixed regardless of conversation history:
+# greetings, goodbyes, identity, and gratitude.
+#
+# Context-dependent words (yes/ok/done/continue) are intentionally excluded so that
+# e.g. "yes" after a RAG response about TAP activities is correctly refined to the
+# actual follow-up intent before routing, instead of getting a generic KB reply.
+FAST_KB_UNCONDITIONAL_PATTERNS = re.compile(
+    r"""
+    # Greetings & Sign-offs
+    ^(?:
+        h(?:i+|e+y+)|hello+|hey+|sup|yo|
+        good\s*(?:morning|afternoon|evening|night)|gm|gn|
+        namaste|shubh\s*prabhat|
+        bye+|goodbye|ta+ta|tata|
+        thank(?:\s*you)?|thanks|shukriya|
+        welcome|howdy
+    )\b
+    |
+    # Identity / Who are you
+    (?:who\s+are\s+you|aap\s+kaun\s+ho|tap\s+buddy|mera\s+naam)
+    """,
+    re.I | re.X | re.UNICODE,
+)
+
 
 def match_fast_kb(query: str) -> bool:
-    """Check if query matches knowledge_bank fast patterns."""
+    """Check if query matches the full knowledge_bank fast patterns (use on refined query)."""
     q = (query or "").strip()
     return bool(FAST_KB_PATTERNS.match(q)) if q else False
+
+
+def match_fast_kb_unconditional(query: str) -> bool:
+    """Check if query is an unconditional KB intent (safe to skip refinement).
+
+    Only matches salutation-type queries whose meaning is fixed regardless of
+    conversation history (greetings, goodbyes, identity, gratitude).
+    Use this on the raw query before refinement runs.
+    """
+    q = (query or "").strip()
+    return bool(FAST_KB_UNCONDITIONAL_PATTERNS.match(q)) if q else False
 
 
 def match_fast_sql(query: str) -> bool:

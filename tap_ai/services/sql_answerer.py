@@ -5,6 +5,7 @@ Generates SQL queries with optional grade/batch filtering for personalized resul
 """
 
 import json
+import re
 import time
 from typing import Dict, Any, List, Optional
 
@@ -99,27 +100,28 @@ def _build_enriched_schema_prompt(user_profile: Optional[Dict] = None) -> str:
 
 SQL_GENERATION_PROMPT = """You are an expert SQL query generator for an educational platform database.
 
-Your task is to convert natural language questions into valid MariaDB SQL queries based on the provided schema.
+Your task is to convert natural language questions into valid PostgreSQL SQL queries based on the provided schema.
 
 RULES:
-1. Return ONLY valid SQL - no explanations, no markdown, no backticks
+1. Return ONLY valid SQL - no explanations, no markdown, no code fences
 2. Use ONLY tables and joins from the schema
-3. Always use table aliases for clarity
-4. Primary key is always 'name'
-5. Always include LIMIT clause (default: 20)
-6. Use proper WHERE conditions for filtering
-7. Apply user context filters (grade, batch) when provided and relevant
-8. For SELECT *, limit to essential columns when possible
-9. Handle NULL values appropriately
-10. Use LIKE '%term%' for text search
+3. Always quote table and column names with double quotes (PostgreSQL syntax — NOT backticks)
+4. Always use table aliases for clarity
+5. Primary key is always 'name'
+6. Always include LIMIT clause (default: 20)
+7. Use proper WHERE conditions for filtering
+8. Apply user context filters (grade, batch) when provided and relevant
+9. For SELECT *, limit to essential columns when possible
+10. Handle NULL values appropriately
+11. Use ILIKE '%term%' for case-insensitive text search
 
 RESPONSE FORMAT:
 Return ONLY the SQL query, nothing else.
 
 Example good queries:
-- SELECT v.name, v.video_name, v.difficulty_tier FROM `tabVideoClass` v WHERE v.difficulty_tier = 'Basic' LIMIT 10
-- SELECT s.name, s.name1, s.grade FROM `tabStudent` s WHERE s.grade = '8' LIMIT 20
-- SELECT a.name, a.assignment_name, a.subject FROM `tabAssignment` a WHERE a.difficulty_tier = 'Intermediate' LIMIT 15
+- SELECT v.name, v.video_name, v.difficulty_tier FROM "tabVideoClass" v WHERE v.difficulty_tier = 'Basic' LIMIT 10
+- SELECT s.name, s.name1, s.grade FROM "tabStudent" s WHERE s.grade = '8' LIMIT 20
+- SELECT a.name, a.assignment_name, a.subject FROM "tabAssignment" a WHERE a.difficulty_tier = 'Intermediate' LIMIT 15
 """
 
 
@@ -194,11 +196,15 @@ def _generate_sql_query(
             max_tokens=800,
         ).strip()
           
-        # Clean up the SQL  
-        sql = sql.replace("```sql", "").replace("```", "").strip()  
-          
-        # Add LIMIT if missing  
-        if "LIMIT" not in sql.upper():  
+        # Clean up the SQL
+        sql = sql.replace("```sql", "").replace("```", "").strip()
+
+        # Safety net: replace any backtick-quoted identifiers with double quotes.
+        # The LLM sometimes reverts to MySQL/MariaDB syntax despite the prompt.
+        sql = re.sub(r"`([^`]+)`", r'"\1"', sql)
+
+        # Add LIMIT if missing
+        if "LIMIT" not in sql.upper():
             sql += " LIMIT 20"  
           
         print(f"> Generated SQL: {sql[:200]}...")  
@@ -207,8 +213,6 @@ def _generate_sql_query(
     except Exception as e:  
         frappe.log_error(f"SQL generation failed: {e}")  
         raise Exception(f"Failed to generate SQL query: {str(e)}")  
-
-# --- SQL Execution ---
 
 # --- SQL Execution ---
 

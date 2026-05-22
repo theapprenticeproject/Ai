@@ -17,7 +17,7 @@ from tap_ai.services.rag_answerer import (
     _refine_query_with_history,
 )
 from tap_ai.utils.mq import publish_to_queue
-from tap_ai.services.routing_patterns import KB_CONTENT_WORDS
+from tap_ai.services.routing_patterns import KB_CONTENT_WORDS, match_fast_kb_unconditional, match_fast_sql
 
 
 def _tts_enabled_for_voice() -> bool:
@@ -274,21 +274,39 @@ def process_message(ch, method, properties, body):
         # 2. Load history FIRST — needed for query refinement
         chat_history = _get_history_from_cache(user_id, session_id=session_id)
 
-        # 3. Refine query with conversation context
-        refined_query = query
-        refine_start = time.perf_counter()
-        try:
-            result = _refine_query_with_history(query, chat_history) or query
-            if isinstance(result, str):
-                refined_query = result
-        except Exception:
-            pass
-        refine_ms = int((time.perf_counter() - refine_start) * 1000)
+        # 3. Fast-path routing on original query — BEFORE refinement.
+        #
+        #    Only UNCONDITIONAL KB intents (greetings, goodbyes, identity) skip
+        #    refinement — their meaning is fixed regardless of conversation history.
+        #
+        #    Context-dependent words (yes/ok/done/continue) are NOT fast-pathed here.
+        #    They go through refinement so that e.g. "yes" after a RAG response about
+        #    a TAP activity is resolved to the actual follow-up intent before routing,
+        #    rather than getting a generic KB reply.
+        refine_ms = 0
+        route_ms = 0
+        if match_fast_kb_unconditional(query):
+            primary_tool = "knowledge_bank"
+            refined_query = query
+        elif match_fast_sql(query):
+            primary_tool = "text_to_sql"
+            refined_query = query
+        else:
+            # 3a. Refine query with conversation context (follow-up resolution)
+            refined_query = query
+            refine_start = time.perf_counter()
+            try:
+                result = _refine_query_with_history(query, chat_history) or query
+                if isinstance(result, str):
+                    refined_query = result
+            except Exception:
+                pass
+            refine_ms = int((time.perf_counter() - refine_start) * 1000)
 
-        # 4. Route on refined query (not raw query)
-        route_start = time.perf_counter()
-        primary_tool = choose_tool(refined_query)
-        route_ms = int((time.perf_counter() - route_start) * 1000)
+            # 3b. Route on refined query
+            route_start = time.perf_counter()
+            primary_tool = choose_tool(refined_query)
+            route_ms = int((time.perf_counter() - route_start) * 1000)
 
         # KB guard: content/navigation queries don't belong in knowledge_bank
         if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
