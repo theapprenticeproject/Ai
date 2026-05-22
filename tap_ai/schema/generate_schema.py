@@ -50,7 +50,7 @@ def get_excluded_doctypes() -> Set[str]:
         )
 
         if not records:
-            print("ℹ️ No ExcludedDoctypes record found")
+            print("No ExcludedDoctypes record found")
             return excluded
 
         doc = frappe.get_doc("ExcludedDoctypes", records[0].name)
@@ -60,7 +60,7 @@ def get_excluded_doctypes() -> Set[str]:
                 excluded.add(row.doctype_name)
 
     except Exception as e:
-        print(f"⚠️ Failed to load ExcludedDoctypes: {e}")
+        print(f"[warn] Failed to load ExcludedDoctypes: {e}")
 
     return excluded
 
@@ -85,13 +85,13 @@ def list_system_doctypes() -> List[dict]:
                 cursor.execute(sql)
                 all_doctypes = cursor.fetchall()
     except Exception as e:
-        print(f"❌ Failed to fetch DocTypes from remote database: {e}")
+        print(f"[error] Failed to fetch DocTypes from remote database: {e}")
         return [], []
 
     system_doctypes = []
     tap_lms_doctypes = []
 
-    print(f"🔍 Analyzing {len(all_doctypes)} doctypes from remote database...")
+    print(f"Analyzing {len(all_doctypes)} doctypes from remote database...")
 
     # Debug: collect all unique modules
     all_modules = set()
@@ -99,7 +99,7 @@ def list_system_doctypes() -> List[dict]:
         module = dt_info.get("module", "")
         all_modules.add(module)
 
-    print(f"📋 Found modules: {sorted(all_modules)}")
+    print(f"Found modules: {sorted(all_modules)}")
 
     for dt_info in all_doctypes:
         doctype = dt_info["name"]
@@ -125,11 +125,11 @@ def list_system_doctypes() -> List[dict]:
                 "module": module
             })
 
-    print(f"📊 System doctypes: {len(system_doctypes)}, TAP LMS doctypes: {len(tap_lms_doctypes)}")
+    print(f"System doctypes: {len(system_doctypes)}, TAP LMS doctypes: {len(tap_lms_doctypes)}")
 
     # Debug: show TAP LMS doctypes found
     if tap_lms_doctypes:
-        print("🎯 TAP LMS doctypes identified:")
+        print("TAP LMS doctypes identified:")
         for dt in tap_lms_doctypes:
             print(f"   + {dt['doctype']} (module: '{dt['module']}')")
 
@@ -149,7 +149,7 @@ def populate_excluded_doctypes():
         if dt["module"].upper() != "TAP LMS":
             actual_system_doctypes.append(dt)
 
-    print(f"📊 Found {len(actual_system_doctypes)} actual system doctypes and {len(tap_lms_doctypes)} TAP LMS doctypes")
+    print(f"Found {len(actual_system_doctypes)} actual system doctypes and {len(tap_lms_doctypes)} TAP LMS doctypes")
 
     # Additional TAP LMS DocTypes to exclude (settings, logging, communication, etc.)
     additional_exclusions = [
@@ -176,7 +176,7 @@ def populate_excluded_doctypes():
     # Combine system doctypes with additional TAP LMS exclusions
     all_exclusions = actual_system_doctypes + [{"doctype": dt, "module": "TAP LMS"} for dt in additional_exclusions]
 
-    print(f"📋 Total exclusions: {len(all_exclusions)} ({len(actual_system_doctypes)} system + {len(additional_exclusions)} TAP LMS)")
+    print(f"Total exclusions: {len(all_exclusions)} ({len(actual_system_doctypes)} system + {len(additional_exclusions)} TAP LMS)")
 
     # Get or create ExcludedDoctypes record
     try:
@@ -198,16 +198,16 @@ def populate_excluded_doctypes():
         doc.insert()
         frappe.db.commit()
 
-        print(f"✅ Successfully populated ExcludedDoctypes with {len(all_exclusions)} total exclusions")
+        print(f"[ok] Populated ExcludedDoctypes with {len(all_exclusions)} total exclusions")
 
         # Show TAP LMS doctypes that will be included
         included_tap_lms = [dt for dt in tap_lms_doctypes if dt["doctype"] not in additional_exclusions]
-        print(f"\n🎯 TAP LMS doctypes that will be included ({len(included_tap_lms)}):")
+        print(f"\nTAP LMS doctypes that will be included ({len(included_tap_lms)}):")
         for dt in sorted(included_tap_lms, key=lambda x: x["doctype"]):
             print(f"   + {dt['doctype']}")
 
     except Exception as e:
-        print(f"❌ Failed to populate ExcludedDoctypes: {e}")
+        print(f"[error] Failed to populate ExcludedDoctypes: {e}")
         import traceback
         traceback.print_exc()
 
@@ -259,7 +259,7 @@ def get_remote_doctype_meta(doctype: str) -> Optional[Dict[str, Any]]:
                 }
 
     except Exception as e:
-        print(f"❌ Failed to get metadata for {doctype}: {e}")
+        print(f"[error] Failed to get metadata for {doctype}: {e}")
         return None
     """
     Automatically populate ExcludedDoctypes with all system doctypes.
@@ -273,7 +273,7 @@ def get_remote_doctype_meta(doctype: str) -> Optional[Dict[str, Any]]:
         if dt["module"].upper() != "TAP LMS":
             actual_system_doctypes.append(dt)
 
-    print(f"📊 Found {len(actual_system_doctypes)} actual system doctypes and {len(tap_lms_doctypes)} TAP LMS doctypes")
+    print(f"Found {len(actual_system_doctypes)} actual system doctypes and {len(tap_lms_doctypes)} TAP LMS doctypes")
 
     # Get or create ExcludedDoctypes record
     try:
@@ -297,15 +297,15 @@ def get_remote_doctype_meta(doctype: str) -> Optional[Dict[str, Any]]:
         doc.save()
         frappe.db.commit()
 
-        print(f"✅ Successfully populated ExcludedDoctypes with {len(actual_system_doctypes)} system doctypes")
+        print(f"[ok] Populated ExcludedDoctypes with {len(actual_system_doctypes)} system doctypes")
 
         # Show TAP LMS doctypes that will be included
-        print(f"\n🎯 TAP LMS doctypes that will be included ({len(tap_lms_doctypes)}):")
+        print(f"\nTAP LMS doctypes that will be included ({len(tap_lms_doctypes)}):")
         for dt in sorted(tap_lms_doctypes, key=lambda x: x["doctype"]):
             print(f"   + {dt['doctype']}")
 
     except Exception as e:
-        print(f"❌ Failed to populate ExcludedDoctypes: {e}")
+        print(f"[error] Failed to populate ExcludedDoctypes: {e}")
 
 
 # -------------------------------------------------------------------
@@ -339,7 +339,7 @@ def discover() -> Tuple[Dict, List[Dict], Dict, Dict]:
                 cursor.execute(sql)
                 all_doctypes = cursor.fetchall()
     except Exception as e:
-        print(f"❌ Failed to fetch DocTypes from remote database: {e}")
+        print(f"[error] Failed to fetch DocTypes from remote database: {e}")
         return {}, [], {}, {}
 
     print(f"> Found {len(all_doctypes)} DocTypes in remote database")
@@ -520,7 +520,7 @@ def cli_list_system():
         if dt["module"].upper() != "TAP LMS":
             actual_system_doctypes.append(dt)
 
-    print(f"\n📋 System doctypes to exclude ({len(actual_system_doctypes)}):\n")
+    print(f"\nSystem doctypes to exclude ({len(actual_system_doctypes)}):\n")
 
     # Group by module
     by_module = {}
@@ -532,14 +532,14 @@ def cli_list_system():
 
     for module in sorted(by_module.keys()):
         doctypes = sorted(by_module[module])
-        print(f"🔸 {module} ({len(doctypes)} doctypes):")
+        print(f"  {module} ({len(doctypes)} doctypes):")
         for doctype in doctypes[:10]:  # Show first 10
             print(f"   - {doctype}")
         if len(doctypes) > 10:
             print(f"   ... and {len(doctypes) - 10} more")
         print()
 
-    print(f"🎯 TAP LMS doctypes to include ({len(tap_lms_doctypes)}):")
+    print(f"TAP LMS doctypes to include ({len(tap_lms_doctypes)}):")
     for dt in sorted(tap_lms_doctypes, key=lambda x: x["doctype"]):
         print(f"   + {dt['doctype']}")
 

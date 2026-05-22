@@ -281,7 +281,7 @@ def _build_context_from_hits(
             if not all_record_ids:
                 continue
             
-            # ✅ ONE query per doctype instead of ONE per hit
+            # ONE query per doctype instead of ONE per hit
             fields = _context_fields_for_doctype(doctype)
             rows = get_remote_all(
                 doctype,

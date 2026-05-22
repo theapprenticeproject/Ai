@@ -1,0 +1,2 @@
+tap_ai.patches.v1_0_0.seed_tap_response_knowledge
+tap_ai.patches.v1_0_2.create_prompt_suggestion_doctype

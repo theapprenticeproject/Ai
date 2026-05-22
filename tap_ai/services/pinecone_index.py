@@ -56,7 +56,7 @@ def delete_index(index_name: Optional[str] = None) -> dict:
     if name in pc.list_indexes().names():
         print(f"Attempting to delete index '{name}'. This is irreversible...")
         pc.delete_index(name)
-        print(f"✅ Index '{name}' deleted successfully.")
+        print(f"Index '{name}' deleted.")
         return {"index": name, "status": "deleted"}
     else:
         print(f"Index '{name}' does not exist. Nothing to delete.")
