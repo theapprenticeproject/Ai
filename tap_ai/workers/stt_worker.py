@@ -103,7 +103,7 @@ def process_message(ch, method, properties, body):
             "is_voice": True, # Crucial flag so LLM knows to send it to TTS next
             "language": language
         })
-        print(f"[✓] {request_id} routed to LLM Worker")
+        print(f"[ok] {request_id} routed to LLM Worker")
 
     except Exception as e:
         err_type = type(e).__name__

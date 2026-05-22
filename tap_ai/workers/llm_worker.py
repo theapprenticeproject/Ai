@@ -149,7 +149,7 @@ def _finalize_voice_answer(
         state_dict.setdefault("metadata", {})
         state_dict["metadata"]["tts_skipped"] = True
         _save_request_state(request_id, state_dict)
-        print(f"[✓] Voice task {request_id} completed as text-only (TTS disabled).")
+        print(f"[ok] Voice task {request_id} completed as text-only (TTS disabled).")
 
 
 def _process_vector_search_synthesis(payload: dict) -> None:
@@ -229,7 +229,7 @@ def _process_vector_search_synthesis(payload: dict) -> None:
             "metadata": metadata,
         })
         _save_request_state(request_id, state_dict)
-        print(f"[✓] Vector search synthesis completed for {request_id}.")
+        print(f"[ok] Vector search synthesis completed for {request_id}.")
 
 def process_message(ch, method, properties, body):
     """Callback triggered when a message is pulled from text_query_queue."""
@@ -473,7 +473,7 @@ def process_message(ch, method, properties, body):
                 state_dict.setdefault("metadata", {})
                 state_dict["metadata"]["tts_skipped"] = True
                 _save_request_state(request_id, state_dict)
-                print(f"[✓] Voice task {request_id} completed as text-only (TTS disabled).")
+                print(f"[ok] Voice task {request_id} completed as text-only (TTS disabled).")
 
         else:
             # Standard Text Query - Finish and save to Redis
@@ -495,7 +495,7 @@ def process_message(ch, method, properties, body):
                 "timing_ms": metadata.get("timings_ms", {}).get("total"),
             })
             _save_request_state(request_id, state_dict)
-            print(f"[✓] Task {request_id} completed successfully.")
+            print(f"[ok] Task {request_id} completed successfully.")
 
     except Exception as e:
         print(f"[x] Task {request_id} failed: {str(e)}")

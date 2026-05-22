@@ -67,7 +67,7 @@ def process_message(ch, method, properties, body):
         })
         frappe.cache().set(request_id, json.dumps(state_dict))
         
-        print(f"[✓] {request_id} audio generated: {public_audio_url}")
+        print(f"[ok] {request_id} audio generated: {public_audio_url}")
 
     except Exception as e:
         print(f"[x] TTS failed for {request_id}: {str(e)}")

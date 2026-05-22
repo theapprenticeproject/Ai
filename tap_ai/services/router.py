@@ -546,7 +546,7 @@ def cli(q: str, user_id: str = "default_user"):
 
     Examples:
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'👋','user_id':'user123'}"
+    bench execute tap_ai.services.router.cli --kwargs "{'q':'hello','user_id':'user123'}"
 
     Turn 1:
     bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos with basic difficulty','user_id':'user123'}"

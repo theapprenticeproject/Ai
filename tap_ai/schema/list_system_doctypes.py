@@ -80,10 +80,10 @@ def populate_excluded_doctypes():
         doc.save()
         frappe.db.commit()
 
-        print(f"✅ Successfully populated ExcludedDoctypes with {len(system_doctypes)} system doctypes")
+        print(f"[ok] Populated ExcludedDoctypes with {len(system_doctypes)} system doctypes")
 
     except Exception as e:
-        print(f"❌ Failed to populate ExcludedDoctypes: {e}")
+        print(f"[error] Failed to populate ExcludedDoctypes: {e}")
 
 def list_system_doctypes():
     """
@@ -99,11 +99,11 @@ def list_system_doctypes():
             by_module[module] = []
         by_module[module].append(dt["doctype"])
 
-    print(f"\n📋 Found {len(system_doctypes)} system doctypes to exclude:\n")
+    print(f"\nFound {len(system_doctypes)} system doctypes to exclude:\n")
 
     for module in sorted(by_module.keys()):
         doctypes = sorted(by_module[module])
-        print(f"🔸 {module} ({len(doctypes)} doctypes):")
+        print(f"  {module} ({len(doctypes)} doctypes):")
         for doctype in doctypes:
             print(f"   - {doctype}")
         print()
@@ -126,7 +126,7 @@ def populate():
     Automatically populate ExcludedDoctypes with system doctypes.
     Use: bench execute tap_ai.schema.list_system_doctypes.populate
     """
-    print("🔄 Populating ExcludedDoctypes with system doctypes...")
+    print("Populating ExcludedDoctypes with system doctypes...")
     populate_excluded_doctypes()
 
 if __name__ == "__main__":

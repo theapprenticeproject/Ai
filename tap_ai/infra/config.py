@@ -31,7 +31,7 @@ class TAPConfig:
 
 
         self._config = site_config or {}
-        print("✅ Configuration loaded successfully")
+        print("[tap_ai] Configuration loaded")
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._config.get(key, default)
@@ -44,9 +44,9 @@ class TAPConfig:
             "openai_ready": bool(self.get("openai_api_key")),
             "redis_ready": bool(self.get("redis_url")) and self.is_enabled("redis"),
         }
-        print("🔍 Service Status:")
+        print("Service status:")
         for service, ready in status.items():
-            print(f"   {'✅' if ready else '❌'} {service}: {'Ready' if ready else 'Not configured'}")
+            print(f"  {'[ok]' if ready else '[not configured]'} {service}")
         return status
 
 # Global instance + helpers

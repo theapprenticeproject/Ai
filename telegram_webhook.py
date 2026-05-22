@@ -44,30 +44,24 @@ def telegram_get_file(file_id: str) -> str:
     return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
 
 
-def whisper_transcribe(file_url: str) -> tuple[str, str]:  
-    """Download audio and transcribe using Whisper."""  
-    audio = requests.get(file_url).content  
-  
-    # Generate unique temp filename to avoid race conditions  
-    temp_filename = f"/tmp/input_{uuid.uuid4().hex}.ogg"  
-      
-    try:  
-        with open(temp_filename, "wb") as f:  
-            f.write(audio)  
-  
-        with open(temp_filename, "rb") as audio_file:  
-            transcript = client.audio.transcriptions.create(  
-                model="gpt-4o-transcribe",  
-                file=audio_file  
-            )  
-    finally:  
-        # Cleanup temp file  
-        if os.path.exists(temp_filename):  
-            os.remove(temp_filename)  
-  
-    text = transcript.text  
-    language = getattr(transcript, "language", "unknown")  
-  
+def whisper_transcribe(file_url: str) -> tuple[str, str]:
+    """Download audio and transcribe using Whisper."""
+    audio = requests.get(file_url).content
+    temp_filename = f"/tmp/input_{uuid.uuid4().hex}.ogg"
+    try:
+        with open(temp_filename, "wb") as f:
+            f.write(audio)
+        with open(temp_filename, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="gpt-4o-transcribe",
+                file=audio_file
+            )
+    finally:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+
+    text = transcript.text
+    language = getattr(transcript, "language", "unknown")
     return text, language
 
 
@@ -114,24 +108,20 @@ def poll_result(request_id: str, timeout_sec: int = 60) -> dict:
 
 
 
-def tts_generate(text: str) -> str:  
-    """Generate MP3 audio from text using OpenAI TTS."""  
-    # Generate unique temp filename  
-    temp_filename = f"/tmp/output_{uuid.uuid4().hex}.mp3"  
-  
-    try:  
-        with client.audio.speech.with_streaming_response.create(  
-            model="gpt-4o-mini-tts",  
-            voice="alloy",  
-            input=text  
-        ) as response:  
-            response.stream_to_file(temp_filename)  
-          
-        return temp_filename  
-    except Exception:  
-        # Cleanup on error  
-        if os.path.exists(temp_filename):  
-            os.remove(temp_filename)  
+def tts_generate(text: str) -> str:
+    """Generate MP3 audio from text using OpenAI TTS. Caller must delete the returned path."""
+    temp_filename = f"/tmp/output_{uuid.uuid4().hex}.mp3"
+    try:
+        with client.audio.speech.with_streaming_response.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=text
+        ) as response:
+            response.stream_to_file(temp_filename)
+        return temp_filename
+    except Exception:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
         raise
 
 
@@ -200,7 +190,11 @@ def telegram_webhook():
             if is_voice_input:
                 try:
                     audio_path = tts_generate(answer_text)
-                    send_voice(chat_id, audio_path)
+                    try:
+                        send_voice(chat_id, audio_path)
+                    finally:
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
                 except Exception as tts_err:
                     print("TTS failed:", tts_err)
                     send_text(chat_id, answer_text)

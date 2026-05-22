@@ -101,7 +101,7 @@ def _get_pool() -> pool.ThreadedConnectionPool:
                 try:
                     _POOL = _create_pool()
                     _POOL_PID = pid
-                    print("✅ Remote database connection pool established")
+                    print("[tap_ai] Remote database connection pool established")
                 except Exception as e:
                     try:
                         frappe.log_error(f"Remote database pool creation failed: {e}")

@@ -100,7 +100,7 @@ def embed_query_cached(
     # Check cache
     cached = frappe.cache().get(cache_key)
     if cached:
-        print(f"✓ Embedding cache hit: {cache_key[:40]}...")
+        print(f"Embedding cache hit: {cache_key[:40]}...")
         return json.loads(cached)
     
     # Embed
@@ -589,21 +589,21 @@ def cli_upsert_all(
     print(f"\n Starting upsert for {total} DocTypes...\n", flush=True)
 
     for i, dt in enumerate(doctypes, 1):
-        print(f"[{i}/{total}] ⏳ Processing: {dt} ...", end="", flush=True)
+        print(f"[{i}/{total}] Processing: {dt} ...", end="", flush=True)
         try:
             result = upsert_doctype(dt, since=since)
             out[dt] = result
             print(
-                f"\r[{i}/{total}] ✅ {dt:<30} "
+                f"\r[{i}/{total}] [ok] {dt:<30} "
                 f"records={result['records_seen']}, vectors={result['vectors_upserted']}",
                 flush=True,
             )
         except Exception as e:
             out[dt] = {"error": str(e)}
-            print(f"\r[{i}/{total}] ❌ {dt:<30} ERROR: {e}", flush=True)
+            print(f"\r[{i}/{total}] [error] {dt:<30} ERROR: {e}", flush=True)
             frappe.log_error(f"Upsert failed for {dt}", str(e))
 
-    print(f"\n✅ Done. Processed {total} DocTypes.\n", flush=True)
+    print(f"\nDone. Processed {total} DocTypes.\n", flush=True)
     return out
 
 def cli_search_auto(q: str, k: int = 6, route_top_n: int = 4):
@@ -629,7 +629,7 @@ def sync_to_pinecone_on_insert(doc, method):
             queue="long",
             job_name=f"pinecone_insert_{doc.doctype}_{doc.name}",
         )
-        print(f"✅ Queued Pinecone sync for {doc.doctype}:{doc.name}")
+        print(f"[ok] Queued Pinecone sync for {doc.doctype}:{doc.name}")
     except Exception as e:
         frappe.log_error(
             f"Failed to queue Pinecone sync on insert for {doc.doctype}:{doc.name}",
@@ -650,7 +650,7 @@ def sync_to_pinecone_on_update(doc, method):
             queue="long",
             job_name=f"pinecone_update_{doc.doctype}_{doc.name}",
         )
-        print(f"✅ Queued Pinecone sync for {doc.doctype}:{doc.name}")
+        print(f"[ok] Queued Pinecone sync for {doc.doctype}:{doc.name}")
     except Exception as e:
         frappe.log_error(
             f"Failed to queue Pinecone sync on update for {doc.doctype}:{doc.name}",
