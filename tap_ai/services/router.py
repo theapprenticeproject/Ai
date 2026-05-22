@@ -23,7 +23,7 @@ from tap_ai.services.sql_answerer import answer_from_sql
 from tap_ai.services.rag_answerer import answer_from_pinecone
 from tap_ai.services.direct_response_bank import lookup_exact_direct_response
 from tap_ai.services.kb_llm_router import verify_and_respond as verify_kb_and_respond
-from tap_ai.services.routing_patterns import match_fast_kb, match_fast_sql
+from tap_ai.services.routing_patterns import match_fast_kb, match_fast_kb_unconditional, match_fast_sql
 
 # ======================================================
 # ROUTER PROMPT
@@ -196,16 +196,21 @@ def process_query(
         content_str = f"Content: {content_details.get('title', 'Unknown')}"
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
-    # -------- Query refinement (skip if already refined by the worker) --------
+    # -------- Query refinement (skip if already refined or unconditional KB) --------
     if not refined_query:
-        refined_query = query
-        try:
-            from tap_ai.services.rag_answerer import _refine_query_with_history
-            refined_query = _refine_query_with_history(query, chat_history or []) or query
-            if not isinstance(refined_query, str):
-                refined_query = str(refined_query)
-        except Exception as e:
-            frappe.log_error(f"Router: query refiner failed: {e}")
+        if match_fast_kb_unconditional(query):
+            # Greetings / sign-offs / identity — refinement only corrupts them.
+            refined_query = query
+            primary_tool = "knowledge_bank"
+        else:
+            refined_query = query
+            try:
+                from tap_ai.services.rag_answerer import _refine_query_with_history
+                refined_query = _refine_query_with_history(query, chat_history or []) or query
+                if not isinstance(refined_query, str):
+                    refined_query = str(refined_query)
+            except Exception as e:
+                frappe.log_error(f"Router: query refiner failed: {e}")
 
     # -------- Choose tool (routing uses refined query) --------
     routing_ms = 0
