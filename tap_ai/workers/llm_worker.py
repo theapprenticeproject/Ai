@@ -17,6 +17,7 @@ from tap_ai.services.rag_answerer import (
     _refine_query_with_history,
 )
 from tap_ai.utils.mq import publish_to_queue
+from tap_ai.services.routing_patterns import KB_CONTENT_WORDS
 
 
 def _tts_enabled_for_voice() -> bool:
@@ -248,13 +249,13 @@ def process_message(ch, method, properties, body):
         except Exception as e:
             print(f"[x] Vector search synthesis failed for {request_id}: {str(e)}")
             frappe.log_error(f"Vector search synthesis error: {str(e)}", "RabbitMQ Worker")
-            frappe.cache().set(request_id, json.dumps({
+            _save_request_state(request_id, {
                 "status": "failed",
                 "error": str(e),
                 "query": query,
                 "user_id": user_id,
                 "session_id": session_id,
-            }))
+            })
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
@@ -290,8 +291,7 @@ def process_message(ch, method, properties, body):
         route_ms = int((time.perf_counter() - route_start) * 1000)
 
         # KB guard: content/navigation queries don't belong in knowledge_bank
-        _KB_CONTENT_WORDS = ("activity", "video", "topic", "course", "explain", "what is", "lesson", "quiz", "assignment")
-        if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in _KB_CONTENT_WORDS):
+        if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
             print(f"> KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
             primary_tool = "vector_search"
 
@@ -418,7 +418,7 @@ def process_message(ch, method, properties, body):
                     },
                     "timing_ms": metadata.get("timings_ms", {}).get("total"),
                 })
-                frappe.cache().set(request_id, json.dumps(state_dict))
+                _save_request_state(request_id, state_dict)
 
                 # Publish to TTS queue for the final voice step.
                 publish_to_queue("audio_tts_queue", {
@@ -454,7 +454,7 @@ def process_message(ch, method, properties, body):
                 })
                 state_dict.setdefault("metadata", {})
                 state_dict["metadata"]["tts_skipped"] = True
-                frappe.cache().set(request_id, json.dumps(state_dict))
+                _save_request_state(request_id, state_dict)
                 print(f"[✓] Voice task {request_id} completed as text-only (TTS disabled).")
 
         else:
@@ -476,20 +476,19 @@ def process_message(ch, method, properties, body):
                 },
                 "timing_ms": metadata.get("timings_ms", {}).get("total"),
             })
-            frappe.cache().set(request_id, json.dumps(state_dict))
+            _save_request_state(request_id, state_dict)
             print(f"[✓] Task {request_id} completed successfully.")
 
     except Exception as e:
         print(f"[x] Task {request_id} failed: {str(e)}")
         frappe.log_error(f"LLM Worker Error: {str(e)}", "RabbitMQ Worker")
         
-        # Save failure state to Redis
-        frappe.cache().set(request_id, json.dumps({
+        _save_request_state(request_id, {
             "status": "failed",
             "error": str(e),
             "query": query,
-            "user_id": user_id
-        }))
+            "user_id": user_id,
+        })
 
     # 6. Acknowledge the message (Removes it from RabbitMQ)
     ch.basic_ack(delivery_tag=method.delivery_tag)

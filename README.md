@@ -115,7 +115,7 @@ graph TD
       KB["services/direct_response_bank.py<br><b>Knowledge Bank</b>"]
         SQL["services/sql_answerer.py<br><b>SQL Engine</b>"]
         RAG["services/rag_answerer.py<br><b>RAG Engine</b>"]
-      Direct["services/direct_answerer.py<br><b>Direct LLM</b>"]
+      KBRouter["services/kb_llm_router.py<br><b>KB LLM Fallback</b>"]
     end
 
     subgraph "Data Layer"
@@ -134,10 +134,10 @@ graph TD
     LLMWorker -->|Route Query| Router
     Router -->|Curated Match| KB
     KB -->|High confidence| Router
-    KB -->|Miss / low confidence| Direct
+    KB -->|Miss / low confidence| KBRouter
     Router -->|Factual| SQL
     Router -->|Conceptual| RAG
-    Router -->|Open-ended support| Direct
+    Router -->|KB fallback| KBRouter
     
     SQL -->|SQL Query| PostgresDB
     RAG -->|Vector Search| PineconeDB
@@ -203,6 +203,8 @@ tap_ai/
 │   ├── __init__.py
 │   ├── query.py                         # Unified query endpoint (text + voice, async via RabbitMQ)
 │   ├── result.py                        # Unified result polling endpoint (with optional server-side wait)
+│   ├── metrics.py                       # RabbitMQ queue health/metrics endpoint
+│   ├── wait.py                          # Delay endpoint for Glific workflow pacing
 │   ├── voice_query.py                   # Backward-compatible wrapper alias for unified query
 │   └── voice_result.py                  # Backward-compatible wrapper alias for unified result
 │
@@ -212,6 +214,10 @@ tap_ai/
 │   ├── sql_answerer.py                  # Text-to-SQL engine
 │   ├── rag_answerer.py                  # Vector RAG engine
 │   ├── doctype_selector.py              # DocType selection for RAG
+│   ├── direct_response_bank.py          # Knowledge Bank: exact-match lookup and cache
+│   ├── kb_llm_router.py                 # Knowledge Bank: LLM fallback when no exact match
+│   ├── routing_patterns.py              # Regex fast-path patterns (zero-LLM routing)
+│   ├── prompt_bank.py                   # Prompt Suggestion loader and system-message renderer
 │   ├── pinecone_store.py                # Pinecone vector database integration
 │   ├── pinecone_index.py                # Pinecone index lifecycle
 │   └── ratelimit.py                     # API rate limiting utility
@@ -229,12 +235,13 @@ tap_ai/
 ├── infra/                               # Infrastructure utilities
 │   ├── __init__.py
 │   ├── config.py                        # Centralized config loader
+│   ├── llm_client.py                    # Shared LLM client (singleton + Redis response cache)
 │   └── sql_catalog.py                   # Schema catalog loader
 │
 ├── utils/                               # Utility functions
 │   ├── __init__.py
 │   ├── dynamic_config.py                # Dynamic config for TAP LMS integration
-│   ├── remote_db.py                     # Remote PostgreSQL connection helpers
+│   ├── remote_db.py                     # Remote PostgreSQL connection pool and query helpers
 │   └── mq.py                            # RabbitMQ publisher utility
 │
 ├── config/                              # Frappe app configuration
@@ -722,6 +729,28 @@ bench execute tap_ai.workers.tts_worker.start
 - Upserts documents with embeddings
 - Performs semantic search
 
+**`tap_ai/services/direct_response_bank.py`**
+- Loads and caches Knowledge Bank entries from the `TAP Response Knowledge` DocType
+- Exact-match lookup with normalization (fast path, no LLM)
+- Fuzzy scoring and alias expansion for candidate matching
+- Cache invalidation triggered by DocType save/delete hooks
+
+**`tap_ai/services/kb_llm_router.py`**
+- LLM fallback for KB queries that fail exact-match lookup
+- Passes full KB context to a single LLM call for semantic matching
+- Falls back to a direct LLM-generated answer when no KB entry fits
+- Response-level Redis cache (15-minute TTL)
+
+**`tap_ai/services/routing_patterns.py`**
+- Regex fast-path patterns for zero-LLM routing (KB and SQL intents)
+- `KB_CONTENT_WORDS` guard constant used by the worker to prevent KB mis-routing
+- Reduces latency and API cost for common query shapes
+
+**`tap_ai/services/prompt_bank.py`**
+- Loads `Prompt Suggestion` DocType entries (with disk-file fallback)
+- Renders system prompts with student/content variable substitution
+- Used to inject a per-context persona into KB and direct-LLM responses
+
 **`tap_ai/services/ratelimit.py`**
 - Enforces API rate limits
 - Uses Redis for distributed counting
@@ -768,6 +797,11 @@ bench execute tap_ai.workers.tts_worker.start
 - Frappe integration with fallbacks
 - Works both inside Frappe and standalone
 - Service status validation
+
+**`tap_ai/infra/llm_client.py`**
+- Singleton `LLMClient` managing `ChatOpenAI` instances per model/temperature/token config
+- `llm_invoke_cached`: Redis-backed response cache (SHA-256 keyed, configurable TTL)
+- Shared by `router.py`, `sql_answerer.py`, `rag_answerer.py`, and `kb_llm_router.py`
 
 ### Schema Generation
 

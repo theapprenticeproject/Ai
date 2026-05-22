@@ -53,9 +53,9 @@ def _register_pinecone_sync_hooks():
                     "after_update": "tap_ai.services.pinecone_store.sync_to_pinecone_on_update",
                 })
             
-            print(f"✅ Registered Pinecone sync hooks for {len(pinecone_sync_doctypes)} doctypes")
+            print(f"[tap_ai] Registered Pinecone sync hooks for {len(pinecone_sync_doctypes)} doctypes")
     except Exception as e:
-        print(f"⚠️  Warning: Could not register Pinecone sync hooks: {e}")
+        print(f"[tap_ai] Warning: Could not register Pinecone sync hooks: {e}")
 
 # Call on app startup
 _register_pinecone_sync_hooks()

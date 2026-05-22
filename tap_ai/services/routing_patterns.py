@@ -39,6 +39,18 @@ BENEFITS:
 import re
 
 # ======================================================
+# KNOWLEDGE BANK CONTENT GUARD
+# ======================================================
+
+# Queries containing these words likely ask for content/data even if they
+# superficially match KB routing patterns (e.g. "what is a video?").
+# The worker uses this to prevent KB mis-routing for content queries.
+KB_CONTENT_WORDS = (
+    "activity", "video", "topic", "course", "explain",
+    "what is", "lesson", "quiz", "assignment",
+)
+
+# ======================================================
 # SQL INTENT PATTERNS
 # ======================================================
 
