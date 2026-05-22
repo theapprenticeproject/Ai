@@ -17,7 +17,7 @@ from tap_ai.services.rag_answerer import (
     _refine_query_with_history,
 )
 from tap_ai.utils.mq import publish_to_queue
-from tap_ai.services.routing_patterns import KB_CONTENT_WORDS, match_fast_kb, match_fast_sql
+from tap_ai.services.routing_patterns import KB_CONTENT_WORDS, match_fast_kb_unconditional, match_fast_sql
 
 
 def _tts_enabled_for_voice() -> bool:
@@ -275,12 +275,17 @@ def process_message(ch, method, properties, body):
         chat_history = _get_history_from_cache(user_id, session_id=session_id)
 
         # 3. Fast-path routing on original query — BEFORE refinement.
-        #    Greetings and simple SQL triggers are unambiguous from the raw text;
-        #    running the refiner on them corrupts the intent (e.g. "hello" becomes
-        #    "What can I help you with today?" which then routes to vector_search).
+        #
+        #    Only UNCONDITIONAL KB intents (greetings, goodbyes, identity) skip
+        #    refinement — their meaning is fixed regardless of conversation history.
+        #
+        #    Context-dependent words (yes/ok/done/continue) are NOT fast-pathed here.
+        #    They go through refinement so that e.g. "yes" after a RAG response about
+        #    a TAP activity is resolved to the actual follow-up intent before routing,
+        #    rather than getting a generic KB reply.
         refine_ms = 0
         route_ms = 0
-        if match_fast_kb(query):
+        if match_fast_kb_unconditional(query):
             primary_tool = "knowledge_bank"
             refined_query = query
         elif match_fast_sql(query):
