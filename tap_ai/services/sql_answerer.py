@@ -9,22 +9,11 @@ import time
 from typing import Dict, Any, List, Optional
 
 import frappe
-from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.infra.sql_catalog import load_schema
 from tap_ai.services.prompt_bank import get_system_message_for_context
-
-
-# --- LLM Initialization ---
-
-def _llm(model: str = "gpt-4o-mini", temperature: float = 0.0) -> ChatOpenAI:  
-    from tap_ai.infra.llm_client import LLMClient  
-    return LLMClient.get_client(  
-        model=model,  
-        temperature=temperature,  
-        max_tokens=800  
-    )
 
 
 # --- Schema Building ---
@@ -157,8 +146,6 @@ def _generate_sql_query(
     except Exception:
         persona = ""
 
-    from tap_ai.services.router import llm_invoke_cached
-      
     # Build user prompt with context hints  
     user_prompt_parts = [  
         f"QUESTION: {query}",  
@@ -275,8 +262,6 @@ def _synthesize_answer_from_results(
     Returns:
         Natural language answer
     """
-    from tap_ai.services.router import llm_invoke_cached
-    
     # Build system prompt with optional personalization
     if user_profile and user_profile.get('name'):
         system_prompt = f"""You are a helpful educational assistant.

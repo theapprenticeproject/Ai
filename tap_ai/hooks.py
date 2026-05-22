@@ -24,4 +24,48 @@ doc_events["Prompt Suggestion"] = {
     "after_delete": "tap_ai.services.prompt_bank.invalidate_prompt_cache",
 }
 
+# ======================================================
+# DOC_EVENTS - Pinecone Auto-Sync for All Indexed DocTypes
+# ======================================================
+import json
+import os
+
+def _register_pinecone_sync_hooks():
+    """
+    Dynamically register Pinecone sync hooks for all doctypes in the allowlist.
+    Called on app startup via after_migrate hook.
+    """
+    global doc_events
+    
+    schema_path = os.path.join(os.path.dirname(__file__), "schema", "tap_ai_schema.json")
+    try:
+        with open(schema_path, "r") as f:
+            schema_data = json.load(f)
+            allowlist = schema_data.get("allowlist", [])
+            # Strip "tab" prefix to get actual doctype names
+            pinecone_sync_doctypes = [dt.replace("tab", "") for dt in allowlist]
+            
+            # Register hooks for all allowed doctypes
+            for doctype in pinecone_sync_doctypes:
+                doc_events.setdefault(doctype, {})
+                doc_events[doctype].update({
+                    "after_insert": "tap_ai.services.pinecone_store.sync_to_pinecone_on_insert",
+                    "after_update": "tap_ai.services.pinecone_store.sync_to_pinecone_on_update",
+                })
+            
+            print(f"[tap_ai] Registered Pinecone sync hooks for {len(pinecone_sync_doctypes)} doctypes")
+    except Exception as e:
+        print(f"[tap_ai] Warning: Could not register Pinecone sync hooks: {e}")
+
+# Call on app startup
+_register_pinecone_sync_hooks()
+
+
+# ======================================================
+# AFTER_MIGRATE - Re-register hooks on every app restart
+# ======================================================
+after_migrate = [
+    "tap_ai.hooks._register_pinecone_sync_hooks"
+]
+
 

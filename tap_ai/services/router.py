@@ -12,82 +12,18 @@ Rich metadata
 
 import json
 import time
-import hashlib
 import uuid
-import re
 from typing import Dict, Any, List, Optional
 
 import frappe
-from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.services.sql_answerer import answer_from_sql
 from tap_ai.services.rag_answerer import answer_from_pinecone
-from tap_ai.services.direct_answerer import answer_direct
-from tap_ai.services.direct_response_bank import lookup_direct_response, lookup_exact_direct_response, probe_direct_response_match
-from tap_ai.services.single_pass_kb_router import verify_and_respond as verify_kb_and_respond
-
-
-# ======================================================
-# LLM INITIALIZATION
-# ======================================================
-
-def _llm(
-    model: Optional[str] = None,
-    temperature: float = 0.0,
-    max_tokens: int = 1500,
-) -> ChatOpenAI:
-    from tap_ai.infra.llm_client import LLMClient
-    return LLMClient.get_client(
-        model=model or (get_config("primary_llm_model") or "gpt-4o-mini"),
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-
-
-def llm_invoke_cached(
-    messages: List,
-    model: str = "gpt-4o-mini",
-    temperature: float = 0.0,
-    cache_ttl: int = 3600,
-    max_tokens: int = 700,
-) -> str:
-    """Invoke LLM with Redis caching; falls back to live invoke on cache issues."""
-    try:
-        payload = {
-            "messages": messages,
-            "model": model,
-            "temperature": temperature,
-        }
-        cache_key = "llm_cache:" + hashlib.sha256(
-            json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()
-
-        cached = frappe.cache().get(cache_key)
-        if cached:
-            if isinstance(cached, bytes):
-                cached = cached.decode("utf-8", errors="ignore")
-            return str(cached)
-    except Exception:
-        cache_key = None
-
-    llm = _llm(model=model, temperature=temperature, max_tokens=max_tokens)
-    start = time.time()
-    resp = llm.invoke(messages)
-    content = getattr(resp, "content", "")
-    if content is None:
-        content = ""
-    content = str(content).strip()
-
-    try:
-        if cache_key and content:
-            frappe.cache().set(cache_key, content, ex=cache_ttl)
-    except Exception:
-        pass
-
-    print(f"> LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
-    return content
-
+from tap_ai.services.direct_response_bank import lookup_exact_direct_response
+from tap_ai.services.kb_llm_router import verify_and_respond as verify_kb_and_respond
+from tap_ai.services.routing_patterns import match_fast_kb, match_fast_sql
 
 # ======================================================
 # ROUTER PROMPT
@@ -111,24 +47,15 @@ Return ONLY JSON:
 }
 """
 
-FAST_SQL_PATTERNS = re.compile(r"\b(list|count|how many|show me all|filter)\b", re.I)
-FAST_KB_PATTERNS = re.compile(
-    r"^(?:h(?:i+|e+y+)|hello+|good\s*(?:morning|afternoon|evening)|namaste|who\s+are\s+you|thanks?|thank\s+you|bye+)\b",
-    re.I,
-)
-
 
 def _fast_route(query: str) -> Optional[str]:
-    q = (query or "").strip()
-    if not q:
-        return None
-
-    if FAST_KB_PATTERNS.match(q):
+    """Fast pattern-based routing without LLM."""
+    if match_fast_kb(query):
         return "knowledge_bank"
-
-    if FAST_SQL_PATTERNS.search(q):
+    
+    if match_fast_sql(query):
         return "text_to_sql"
-
+    
     return None
 
 
@@ -245,6 +172,7 @@ def process_query(
     context: Optional[Dict[str, Any]] = None,
     voice_mode: bool = False,
     primary_tool: Optional[str] = None,
+    refined_query: Optional[str] = None,
 ) -> dict:
 
     chat_history = chat_history or []
@@ -268,20 +196,68 @@ def process_query(
         content_str = f"Content: {content_details.get('title', 'Unknown')}"
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
-    # -------- Choose tool --------
+    # -------- Query refinement (skip if already refined by the worker) --------
+    if not refined_query:
+        refined_query = query
+        try:
+            from tap_ai.services.rag_answerer import _refine_query_with_history
+            refined_query = _refine_query_with_history(query, chat_history or []) or query
+            if not isinstance(refined_query, str):
+                refined_query = str(refined_query)
+        except Exception as e:
+            frappe.log_error(f"Router: query refiner failed: {e}")
+
+    # -------- Choose tool (routing uses refined query) --------
+    routing_ms = 0
     if primary_tool is None:
         routing_start = time.perf_counter()
-        primary_tool = choose_tool(query, user_context)
+        primary_tool = choose_tool(refined_query, user_context)
         routing_ms = int((time.perf_counter() - routing_start) * 1000)
-    else:
-        routing_ms = 0
-    print(f"> Selected Primary Tool: {primary_tool}")
+        print(f"> Selected Primary Tool: {primary_tool}")
 
     fallback_used = False
     result = {}
 
     # -------- Execute --------
     if primary_tool == "knowledge_bank":
+        """
+        KNOWLEDGE BANK EXECUTION FLOW
+        =============================
+        
+        The knowledge_bank tool follows a two-stage process:
+        
+        STAGE 1: EXACT MATCH LOOKUP (FAST PATH)
+        ──────────────────────────────────────
+        lookup_exact_direct_response(query) checks if the user's query matches
+        any KB entry after normalization. This includes:
+          - student_query field
+          - alternate_queries field (all variants)
+        
+        If found: Returns KB response immediately (~50ms, no LLM)
+        
+        Examples:
+          Query: "Hi"           → Matches "hi" (student_query)
+          Query: "Hello there"  → Matches "hello" (alternate_query)
+          Query: "Goodbye"      → Matches "bye" (alternate_query)
+        
+        STAGE 2: LLM FALLBACK (REGEX MATCH BUT NO EXACT MATCH)
+        ──────────────────────────────────────────────────────
+        If exact match fails, verify_kb_and_respond() is called.
+        This loads the ENTIRE active KB and passes it to the LLM to:
+          1. Check if the query semantically matches any KB entry
+          2. Return the matched KB response if found
+          3. Generate a custom answer if no KB match exists
+        
+        The LLM has full context: match_queries + responses for all KB entries
+        This ensures regex-matched queries (e.g., "hello" matching regex) don't
+        get dropped if alternate queries weren't explicitly added to the KB.
+        
+        Examples:
+          Regex Match: "heyyyy"      → Exact: NO → LLM: Matches "hey" intent → KB Response
+          Regex Match: "gud morning" → Exact: NO → LLM: Matches "good morning" → KB Response
+        """
+        
+        # STAGE 1: Try exact match (fast path, no LLM)
         exact_result = lookup_exact_direct_response(
             query=query,
             user_profile=user_profile,
@@ -289,7 +265,7 @@ def process_query(
         if exact_result:
             result = exact_result
         else:
-            # Hybrid approach: probe KB for best candidate, then ask LLM to verify/use it.
+            # STAGE 2: LLM selection with full KB context (fallback)
             result = verify_kb_and_respond(
                 query=query,
                 user_profile=user_profile,
@@ -297,13 +273,10 @@ def process_query(
             )
 
         processing_ms = int((time.perf_counter() - process_start) * 1000)
-        return _with_meta(
-            result,
-            query,
-            "knowledge_bank",
-            False,
-            timing_ms={"router": routing_ms, "processing_total": processing_ms},
-        )
+        timings = {"processing_total": processing_ms}
+        if routing_ms:
+            timings["route_ms"] = routing_ms
+        return _with_meta(result, query, "knowledge_bank", False, timing_ms=timings)
 
     if primary_tool == "text_to_sql":
         result = answer_from_sql(
@@ -314,14 +287,15 @@ def process_query(
         )
 
         if _is_failure(result):
-            print("> SQL failure detected â†’ Falling back to RAG")
+            print("> SQL failure detected → Falling back to RAG")
             fallback_used = True
             interim = "Searching, please wait a few more seconds..."
             result = answer_from_pinecone(
                 query,
                 user_profile=user_profile,
                 content_details=content_details,
-                chat_history=chat_history
+                chat_history=chat_history,
+                refined_query=refined_query,
             )
             result["interim_message"] = interim
 
@@ -331,17 +305,15 @@ def process_query(
             query,
             user_profile=user_profile,
             content_details=content_details,
-            chat_history=chat_history
+            chat_history=chat_history,
+            refined_query=refined_query,
         )
 
     processing_ms = int((time.perf_counter() - process_start) * 1000)
-    return _with_meta(
-        result,
-        query,
-        primary_tool,
-        fallback_used,
-        timing_ms={"router": routing_ms, "processing_total": processing_ms},
-    )
+    timings = {"processing_total": processing_ms}
+    if routing_ms:
+        timings["route_ms"] = routing_ms
+    return _with_meta(result, query, primary_tool, fallback_used, timing_ms=timings)
 
 
 # ======================================================
@@ -620,3 +592,4 @@ def cli(q: str, user_id: str = "default_user"):
     print(json.dumps(out, indent=2, ensure_ascii=False))
 
     return out
+

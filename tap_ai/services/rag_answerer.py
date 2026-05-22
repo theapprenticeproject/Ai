@@ -14,27 +14,16 @@ import time
 from typing import Dict, Any, List, Optional
 
 import frappe
-from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.services.prompt_bank import get_system_message_for_context
 from tap_ai.services.pinecone_store import (
     search_auto_namespaces,
     get_db_columns_for_doctype,
     embed_query_cached,
+    _record_to_text,
 )
-
-# ======================================================
-# LLM INITIALIZATION
-# ======================================================
-
-def _llm(model: str = "gpt-4o-mini", temperature: float = 0.2) -> ChatOpenAI:  
-    from tap_ai.infra.llm_client import LLMClient  
-    return LLMClient.get_client(  
-        model=model,  
-        temperature=temperature,  
-        max_tokens=1500  
-    ) 
 
 
 # ======================================================
@@ -51,7 +40,7 @@ Return ONLY the refined question.
 """
 
 _FOLLOW_UP_MARKERS = (
-    "it", "this", "that", "these", "those", "they", "them", "he", "she",
+    "it", "this", "that", "these", "those", "they", "them", "he", "she", "yes",
     "first one", "second one", "third one", "the above", "previous", "earlier",
     "same", "that one", "explain more", "summarize that", "what about", "how about",
 )
@@ -104,9 +93,6 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
     if not recent_history:
         return query
 
-    #  OPTIMIZATION: Use cached LLM invoke (Phase 1)
-    from tap_ai.services.router import llm_invoke_cached
-    
     formatted_history = "\n".join(
         f"{msg.get('role', 'user')}: {(msg.get('content') or '')[:max_chars_per_msg]}"
         for msg in recent_history
@@ -157,39 +143,8 @@ def _build_metadata_filter(
 
 
 # ======================================================
-# CONTEXT BUILDING (RESTORED FROM EARLIER VERSION)
+# CONTEXT BUILDING
 # ======================================================
-
-def _record_to_text(
-    doctype: str,
-    row: Dict[str, Any],
-    meta_cache: Optional[Dict[str, Any]] = None,
-) -> str:
-    parts = []
-    meta = None
-    if meta_cache is not None:
-        meta = meta_cache.get(doctype)
-        if meta is None:
-            meta = frappe.get_meta(doctype)
-            meta_cache[doctype] = meta
-    else:
-        meta = frappe.get_meta(doctype)
-
-    title_field = meta.title_field
-    if title_field and row.get(title_field):
-        parts.append(f"{meta.get_field(title_field).label}: {row[title_field]}")
-
-    parts.append(f"DocType: {doctype}")
-    parts.append(f"ID: {row.get('name')}")
-
-    for k, v in row.items():
-        if k in ("name", title_field) or v in (None, ""):
-            continue
-        v = v.isoformat() if hasattr(v, "isoformat") else v
-        parts.append(f"{k}: {v}")
-
-    return "\n".join(parts)
-
 
 def _max_context_hits() -> int:
     """Cap DB hydration to top-N vector hits to reduce latency."""
@@ -398,8 +353,6 @@ def _synthesize_answer(
     """
      OPTIMIZATION: Use cached LLM invoke (Phase 1)
     """
-    from tap_ai.services.router import llm_invoke_cached
-    
     history = history or []
     synthesis_history_turns = max(0, _to_int(get_config("rag_synthesis_history_turns") or 1, 1))
     synthesis_temperature = _to_float(get_config("rag_synthesis_temperature") or 0.0, 0.0)
@@ -411,20 +364,10 @@ def _synthesize_answer(
     except Exception:
         persona = ""
 
-    if user_profile and user_profile.get("name"):
-        system_prompt = f"""You are a helpful educational AI assistant.
-
-The user is {user_profile['name']}.
-Grade: {user_profile.get('grade', 'N/A')}
-
-Use friendly, age-appropriate language.
-"""
-    else:
-        system_prompt = """You are a helpful educational AI assistant."""
+    # TAP Buddy persona is the sole system message; fall back to a minimal prompt.
+    system_prompt = persona or "You are a helpful educational AI assistant."
 
     messages = [["system", system_prompt]]
-    if persona:
-        messages.append(["system", persona])
     for msg in history[-synthesis_history_turns:]:
         messages.append([msg["role"], msg["content"]])
     messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])
@@ -449,6 +392,7 @@ def retrieve_vector_search(
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
+    refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the vector-search side of the RAG pipeline without answer synthesis.
@@ -465,8 +409,10 @@ def retrieve_vector_search(
 
     effective_k = _effective_k(k)
 
+    # Skip refinement if the router already refined it upstream.
     t_refine = time.time()
-    refined_query = _refine_query_with_history(query, chat_history)
+    if refined_query is None:
+        refined_query = _refine_query_with_history(query, chat_history)
     _stamp("refine_query", t_refine)
 
     t_filters = time.time()
@@ -629,6 +575,7 @@ def answer_from_pinecone(
     user_profile: Optional[Dict[str, Any]] = None,
     content_details: Optional[Dict[str, Any]] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
+    refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
 
     chat_history = chat_history or []
@@ -642,9 +589,12 @@ def answer_from_pinecone(
 
     effective_k = _effective_k(k)
 
-    # 1. Refine query
+    # 1. Refine query — skip if the router already refined it upstream.
     t_refine = time.time()
-    refined_query = _refine_query_with_history(query, chat_history)
+    if refined_query is None:
+        refined_query = _refine_query_with_history(query, chat_history)
+    else:
+        print(f"> Using pre-refined query from router: {refined_query}")
     _stamp("refine_query", t_refine)
 
     # 2. Build metadata filters

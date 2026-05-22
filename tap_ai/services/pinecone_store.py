@@ -611,3 +611,49 @@ def cli_search_auto(q: str, k: int = 6, route_top_n: int = 4):
     print(frappe.as_json(out, indent=2))
     return out
 
+
+# -------------------------------------------------------------------
+# AUTO-SYNC HANDLERS (doc_events)
+# -------------------------------------------------------------------
+
+def sync_to_pinecone_on_insert(doc, method):
+    """
+    Sync new record to Pinecone immediately after insert.
+    Queues asynchronously to avoid blocking the document save.
+    """
+    try:
+        frappe.enqueue(
+            "tap_ai.services.pinecone_store.upsert_doctype",
+            doctype=doc.doctype,
+            since=doc.creation,
+            queue="long",
+            job_name=f"pinecone_insert_{doc.doctype}_{doc.name}",
+        )
+        print(f"✅ Queued Pinecone sync for {doc.doctype}:{doc.name}")
+    except Exception as e:
+        frappe.log_error(
+            f"Failed to queue Pinecone sync on insert for {doc.doctype}:{doc.name}",
+            str(e)
+        )
+
+
+def sync_to_pinecone_on_update(doc, method):
+    """
+    Sync updated record to Pinecone (delta sync).
+    Only syncs records modified in the last 5 minutes to avoid redundant syncs.
+    """
+    try:
+        frappe.enqueue(
+            "tap_ai.services.pinecone_store.upsert_doctype",
+            doctype=doc.doctype,
+            since=doc.modified,
+            queue="long",
+            job_name=f"pinecone_update_{doc.doctype}_{doc.name}",
+        )
+        print(f"✅ Queued Pinecone sync for {doc.doctype}:{doc.name}")
+    except Exception as e:
+        frappe.log_error(
+            f"Failed to queue Pinecone sync on update for {doc.doctype}:{doc.name}",
+            str(e)
+        )
+

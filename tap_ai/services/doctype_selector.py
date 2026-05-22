@@ -4,12 +4,11 @@ import json
 import logging
 import hashlib
 from typing import List, Dict, Any, Optional
-from functools import lru_cache
 
 import frappe
-from langchain_openai import ChatOpenAI
 
 from tap_ai.infra.config import get_config
+from tap_ai.infra.llm_client import LLMClient
 from tap_ai.infra.sql_catalog import load_schema  
 
 logger = logging.getLogger(__name__)
@@ -18,9 +17,6 @@ logger = logging.getLogger(__name__)
 # Cache configuration  
 CACHE_TTL = 300  # 5 minutes  
 CACHE_PREFIX = "doctype_selector:"  
-
-_LLM_CLIENT: Optional[ChatOpenAI] = None
-_LLM_MODEL: Optional[str] = None
 
 SYSTEM_PROMPT = """You are a routing assistant.
 
@@ -43,28 +39,6 @@ Rules:
 - Keep 'doctypes' length <= TOP_N.
 - No prose outside JSON. No backticks.
 """
-
-
-def _llm() -> Optional[ChatOpenAI]:
-    global _LLM_CLIENT, _LLM_MODEL
-    api_key = get_config("openai_api_key")
-    model = get_config("primary_llm_model") or "gpt-4o-mini"
-
-    if not api_key:
-        logger.error("OpenAI API key missing.")
-        return None
-
-    if _LLM_CLIENT is not None and _LLM_MODEL == model:
-        return _LLM_CLIENT
-
-    _LLM_CLIENT = ChatOpenAI(
-        model_name=model,
-        openai_api_key=api_key,
-        temperature=0.0,
-        max_tokens=400,
-    )
-    _LLM_MODEL = model
-    return _LLM_CLIENT
 
 
 def _schema_summary(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -131,10 +105,11 @@ def pick_doctypes(
     # Generate result  
     schema = load_schema()  
     summary = _schema_summary(schema)  
-    llm = _llm()  
-  
-    if not llm:  
-        return [] 
+    llm = LLMClient.get_client(
+        model=get_config("primary_llm_model") or "gpt-4o-mini",
+        temperature=0.0,
+        max_tokens=400,
+    )
 
     # Decode user profile (optional)
     user_profile = None
