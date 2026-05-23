@@ -1,0 +1,191 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-05-23 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "request_id",
+  "user_id",
+  "session_id",
+  "is_voice",
+  "language",
+  "query_preview",
+  "section_engine",
+  "tool",
+  "answer_source",
+  "fallback_used",
+  "section_kb",
+  "matched_kb_entry",
+  "matched_kb_category",
+  "section_timing",
+  "timing_ms",
+  "route_ms",
+  "processing_ms",
+  "section_outcome",
+  "status",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "request_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Request ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "user_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "User ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "session_id",
+   "fieldtype": "Data",
+   "label": "Session ID",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_voice",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Voice Query",
+   "read_only": 1
+  },
+  {
+   "fieldname": "language",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Language",
+   "read_only": 1
+  },
+  {
+   "fieldname": "query_preview",
+   "fieldtype": "Small Text",
+   "label": "Query (preview)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_engine",
+   "fieldtype": "Section Break",
+   "label": "Engine"
+  },
+  {
+   "fieldname": "tool",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Tool",
+   "options": "\nknowledge_bank\ntext_to_sql\nvector_search",
+   "read_only": 1
+  },
+  {
+   "fieldname": "answer_source",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Answer Source",
+   "options": "\nknowledge_bank_exact\nkb_llm_selected\nllm_generated\nsql\nrag\nsql_fallback_rag",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "fallback_used",
+   "fieldtype": "Check",
+   "label": "Fallback Used",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_kb",
+   "fieldtype": "Section Break",
+   "label": "Knowledge Bank"
+  },
+  {
+   "fieldname": "matched_kb_entry",
+   "fieldtype": "Data",
+   "label": "Matched KB Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "matched_kb_category",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "KB Category",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_timing",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "fieldname": "timing_ms",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "End-to-End (ms)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "route_ms",
+   "fieldtype": "Int",
+   "label": "Route (ms)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "processing_ms",
+   "fieldtype": "Int",
+   "label": "Processing (ms)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_outcome",
+   "fieldtype": "Section Break",
+   "label": "Outcome"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "success\nfailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-05-23 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap AI",
+ "name": "AI Query Log",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
