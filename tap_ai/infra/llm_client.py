@@ -12,6 +12,7 @@ from typing import List, Optional
 import frappe
 from langchain_openai import ChatOpenAI
 from loguru import logger
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from tap_ai.infra.config import get_config
 
@@ -76,15 +77,29 @@ def llm_invoke_cached(
 
     llm = LLMClient.get_client(model=model, temperature=temperature, max_tokens=max_tokens)
     start = time.time()
-    resp = llm.invoke(messages)
+
+    # Retry on transient errors (timeouts, connection issues, server errors).
+    # Do NOT retry on configuration errors (ValueError, KeyError) — those won't self-heal.
+    _non_retryable = (ValueError, KeyError, TypeError)
+
+    @retry(
+        retry=retry_if_exception(lambda e: not isinstance(e, _non_retryable)),
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=2, max=8),
+        reraise=True,
+    )
+    def _invoke():
+        return llm.invoke(messages)
+
+    resp = _invoke()
     content = getattr(resp, "content", "") or ""
     content = str(content).strip()
 
     try:
         if cache_key and content:
             frappe.cache().set(cache_key, content, ex=cache_ttl)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"LLM response cache write failed: {e}")
 
     logger.debug(f"LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
     return content

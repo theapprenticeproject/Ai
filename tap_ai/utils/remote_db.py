@@ -140,12 +140,17 @@ def execute_remote_query(sql: str, params: Optional[tuple] = None) -> List[Dict[
     try:
         db_pool = _get_pool()
         conn = db_pool.getconn()
+        max_rows = int(frappe.conf.get("remote_db_max_rows", 1000) or 1000)
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             if params is None or len(params) == 0:
                 cursor.execute(sql)
             else:
                 cursor.execute(sql, params)
-            results = cursor.fetchall()
+            results = cursor.fetchmany(max_rows + 1)
+
+        if len(results) > max_rows:
+            logger.warning(f"Query returned >{max_rows} rows — truncating. SQL: {sql[:200]}")
+            results = results[:max_rows]
 
         return [dict(row) for row in results]
 
