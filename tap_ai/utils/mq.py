@@ -1,8 +1,28 @@
-# tap_ai/utils/mq.py  
+# tap_ai/utils/mq.py
+"""
+RabbitMQ publish utilities with connection pooling and metrics.
 
-import frappe  
-import pika  
-import json  
+`publish_to_queue()` is the single entry point for all queue publishes across
+the tap_ai codebase. It maintains a thread-safe pool of persistent pika
+connections (default size: 5) and retries transiently on connection errors.
+
+Raises:
+    MQUnavailableError  — RabbitMQ is unreachable after all retries
+    MQPublishError      — publish succeeded to broker but was NACK'd
+
+Metrics (error rate, average latency, total publishes) are accumulated
+in-process and exposed via `get_queue_metrics()`, which is called by
+`tap_ai.api.metrics.queue_metrics`.
+
+Config keys (site_config.json):
+    rabbitmq_url      — AMQP URL (default: amqp://guest:guest@localhost:5672/)
+    mq_pool_size      — connection pool size (default: 5)
+    mq_publish_timeout — publish confirmation timeout in seconds (default: 5)
+"""
+
+import frappe
+import pika
+import json
 import time  
 from threading import Lock
 import logging

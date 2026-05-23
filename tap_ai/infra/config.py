@@ -1,4 +1,21 @@
 # infra/config.py
+"""
+TAP AI configuration loader.
+
+Provides a unified config interface that reads from Frappe's `site_config.json`
+when running inside a Frappe bench, and falls back gracefully when running as a
+standalone microservice or in tests.
+
+Usage:
+    from tap_ai.infra.config import get_config
+    api_key = get_config("openai_api_key")
+
+All tap_ai config keys live in site_config.json alongside standard Frappe keys.
+See README.md for the full list of supported keys and their defaults.
+
+Module-level singleton: `config` (TAPConfig instance)
+Helper functions: `get_config(key, default)`, `dump_config()`
+"""
 
 from typing import Any, Dict
 from loguru import logger

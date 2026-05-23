@@ -1,4 +1,23 @@
 # tap_ai/workers/stt_worker.py
+"""
+STT Worker — speech-to-text transcription step.
+
+Consumes messages from `audio_stt_queue`. For each message:
+    1. Downloads the audio file from the provided URL
+    2. Transcribes it using OpenAI Whisper (`whisper-1`)
+    3. Detects the spoken language using GPT-4o-mini
+    4. Updates Redis state to `transcribed`
+    5. Publishes the transcript to `text_query_queue` for the LLM Worker
+
+Audio files are downloaded to /tmp and cleaned up after transcription
+regardless of success or failure.
+
+Worker class: STTWorker (injectable rabbitmq_url for testing)
+Entry point:  start()  (called by the worker runner)
+
+Config keys (site_config.json):
+    openai_api_key, rabbitmq_url
+"""
 
 import frappe
 import json

@@ -1,4 +1,18 @@
 # tap_ai/services/doctype_selector.py
+"""
+LLM-based DocType selector for SQL query routing.
+
+Given a natural-language question and the full schema catalog, asks the LLM
+to identify which Frappe DocTypes (database tables) are relevant to the query.
+This narrows the SQL schema passed to the SQL-generation step, which reduces
+prompt tokens and improves accuracy.
+
+Results are cached in Redis for 5 minutes (keyed by a hash of the question +
+schema) so repeated or similar queries skip the LLM call entirely.
+
+Key function:
+    pick_doctypes(query, user_context) → List[str]  # ordered by relevance
+"""
 
 import json
 import logging

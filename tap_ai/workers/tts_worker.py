@@ -1,4 +1,23 @@
 # tap_ai/workers/tts_worker.py
+"""
+TTS Worker — text-to-speech synthesis step.
+
+Consumes messages from `audio_tts_queue`. For each message:
+    1. Generates an MP3 audio file using OpenAI TTS (`tts-1`, voice: alloy)
+    2. Saves it to the Frappe File Manager as a public file
+    3. Cleans up the temporary /tmp file
+    4. Updates Redis state to `success` with the public audio URL
+
+Only active when `tap_ai_enable_voice_tts = 1` in site_config.json. When TTS
+is disabled, the LLM Worker finalizes the voice request as text-only instead
+of enqueuing here.
+
+Worker class: TTSWorker (injectable rabbitmq_url for testing)
+Entry point:  start()  (called by the worker runner)
+
+Config keys (site_config.json):
+    openai_api_key, rabbitmq_url, tap_ai_enable_voice_tts
+"""
 
 import frappe
 import time

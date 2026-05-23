@@ -1,3 +1,18 @@
+"""
+Glific workflow delay endpoint.
+
+Provides a simple HTTP-triggered sleep so Glific automation flows can pause
+between steps without building timer logic into the flow itself. The delay
+is synchronous and capped at 5 minutes to prevent runaway holds.
+
+Endpoint:
+    GET  /api/method/tap_ai.api.wait.delay?delay_seconds=10
+    POST /api/method/tap_ai.api.wait.delay  (delay_seconds in body)
+
+Typical Glific usage: call this between the query step and the result step
+to give workers time to process before the client polls for an answer.
+"""
+
 import frappe
 import time
 from loguru import logger

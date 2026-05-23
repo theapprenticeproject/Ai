@@ -1,4 +1,25 @@
 # tap_ai/services/pinecone_store.py
+"""
+Pinecone vector store for semantic search (RAG retrieval).
+
+Manages embedding generation, upsert, and similarity search against the
+Pinecone index. At query time, `search_pinecone()` embeds the refined query,
+routes it to the right namespace(s) based on DocType, applies optional
+metadata filters (grade, batch, course), and returns the top-k context chunks.
+
+Lazy-initializes the Pinecone client and OpenAI embedding model on first use,
+then reuses the same connection for subsequent requests. Embeddings are cached
+in Redis for 24 hours to avoid re-embedding identical queries.
+
+A bounded `ThreadPoolExecutor` handles concurrent upsert operations so bulk
+indexing does not block the main thread.
+
+Key functions:
+    search_pinecone(query, user_context, top_k) → List[dict]
+    upsert_documents(docs)
+    delete_namespace(namespace)
+"""
+
 from __future__ import annotations
 
 import time

@@ -1,5 +1,23 @@
 # tap_ai/services/pinecone_index.py
-# Added a delete_index function for easy resets.
+"""
+Pinecone index lifecycle management.
+
+Handles creation, inspection, and deletion of the Pinecone vector index used
+by the RAG engine. Reads index name, embedding dimension, cloud/region, and
+metric from site_config.json so the same code works across environments.
+
+Key functions:
+    ensure_index()   — create the index if it does not exist (idempotent)
+    describe_index() — return current index stats (vector count, dimension)
+    delete_index()   — drop the index (useful for full resets during dev)
+
+These are admin utilities; they are NOT called on the hot path.
+The hot path (query time) uses pinecone_store.py directly.
+
+Config keys (site_config.json):
+    pinecone_api_key, pinecone_index, embedding_dimension
+"""
+
 from __future__ import annotations
 import time
 import frappe

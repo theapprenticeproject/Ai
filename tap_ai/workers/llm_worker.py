@@ -1,4 +1,26 @@
 # tap_ai/workers/llm_worker.py
+"""
+LLM Worker — core text-query processor.
+
+Consumes messages from `text_query_queue` and orchestrates the full
+query-to-answer pipeline:
+
+    1. Refine the query using conversation history (follow-up resolution)
+    2. Route to the appropriate engine via LLM or fast regex patterns:
+           knowledge_bank  → direct KB lookup + optional LLM fallback
+           text_to_sql     → SQL generation against remote PostgreSQL
+           vector_search   → two-step: retrieve (pinecone_store) then synthesize
+    3. Save the answer and updated chat history to Redis
+    4. For voice requests: forward to audio_tts_queue (if TTS enabled)
+       or store text answer directly
+
+The vector_search engine is split across two queue messages (the same queue)
+to fit within Glific's per-hop timeout: the first message does the Pinecone
+retrieval, the second (`stage=vector_search_synthesis`) generates the answer.
+
+Worker class: LLMWorker (injectable rabbitmq_url for testing)
+Entry point:  start()  (called by the worker runner)
+"""
 
 import frappe
 import json
