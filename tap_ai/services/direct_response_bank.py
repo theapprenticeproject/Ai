@@ -10,11 +10,16 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import frappe
+from loguru import logger
 
 
 KB_DOCTYPE = "TAP Response Knowledge"
 KB_CACHE_KEY = "tap_ai:direct_response_knowledge:v1"
 KB_CACHE_TTL = 3600
+# Default thresholds — override via site_config.json:
+#   "kb_base_threshold": 0.82
+#   "kb_short_query_threshold": 0.88
+#   "kb_medium_query_threshold": 0.84
 KB_BASE_THRESHOLD = 0.82
 KB_SHORT_QUERY_THRESHOLD = 0.88
 KB_MEDIUM_QUERY_THRESHOLD = 0.84
@@ -149,13 +154,16 @@ def _score_candidate(query: str, candidate: str) -> float:
 
 
 def _minimum_score(query: str) -> float:
+	base = float(frappe.conf.get("kb_base_threshold") or KB_BASE_THRESHOLD)
+	short = float(frappe.conf.get("kb_short_query_threshold") or KB_SHORT_QUERY_THRESHOLD)
+	medium = float(frappe.conf.get("kb_medium_query_threshold") or KB_MEDIUM_QUERY_THRESHOLD)
 	query_norm = normalize_text(query)
 	query_tokens = len(query_norm.split()) if query_norm else 0
 	if query_tokens <= 2:
-		return KB_SHORT_QUERY_THRESHOLD
+		return short
 	if query_tokens <= 4:
-		return KB_MEDIUM_QUERY_THRESHOLD
-	return KB_BASE_THRESHOLD
+		return medium
+	return base
 
 
 def select_best_response(query: str, entries: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -210,8 +218,8 @@ def _load_entries_from_cache() -> Optional[List[Dict[str, Any]]]:
 def _store_entries_in_cache(entries: List[Dict[str, Any]]) -> None:
 	try:
 		frappe.cache().set(KB_CACHE_KEY, json.dumps(entries, default=str), ex=KB_CACHE_TTL)
-	except Exception:
-		pass
+	except Exception as e:
+		logger.warning(f"KB cache write failed — responses will not be cached: {e}")
 
 
 def get_direct_response_entries(force_refresh: bool = False) -> List[Dict[str, Any]]:
@@ -257,7 +265,7 @@ def invalidate_kb_cache() -> bool:
 	"""
 	try:
 		frappe.cache().delete(KB_CACHE_KEY)
-		print("> Direct response KB cache invalidated")
+		logger.info("Direct response KB cache invalidated")
 		return True
 	except Exception as e:
 		frappe.log_error(f"Failed to invalidate KB cache: {e}", "tap_ai.services.direct_response_bank")

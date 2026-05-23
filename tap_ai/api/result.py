@@ -3,6 +3,7 @@
 import frappe
 import json
 import time
+from loguru import logger
 
 
 MAX_WAIT_SECONDS = 55
@@ -18,6 +19,10 @@ VECTOR_SEARCH_DONE_STATES = {
     "vector_search_failed",
 }
 
+# Legacy status-based fallback for router phase detection.
+# In practice, _normalize_router_result() detects completion via the
+# router_decision dict being present in the state — this set is a secondary
+# safety net and is not currently emitted by the worker.
 ROUTER_DONE_STATES = {
     "router_complete",
 }
@@ -309,13 +314,13 @@ def result(
         try:
             cached = frappe.cache().get(request_id)
         except Exception as e:
-            print(f"[result] Cache read error for {request_id}: {e}")
+            logger.error(f"Cache read error for {request_id}: {e}")
             return _empty_result(request_id, error=f"Cache read error for {request_id}: {e}")
 
-        print(f"[result] cache_lookup: request_id={request_id} cached_type={type(cached).__name__} ts={int(time.time())}")
+        logger.debug(f"cache_lookup: request_id={request_id} cached_type={type(cached).__name__}")
         data, error = _safe_load_cache_payload(cached)
         if error:
-            print(f"[result] cache payload invalid or missing for {request_id}: {error}")
+            logger.warning(f"Cache payload invalid or missing for {request_id}: {error}")
             return _empty_result(request_id, error=f"No such request_id or unavailable state: {request_id}")
 
         if phase == "router":
