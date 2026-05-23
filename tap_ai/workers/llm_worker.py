@@ -57,7 +57,6 @@ def _apply_end_to_end_timing(state_dict: dict, metadata: dict) -> dict:
         return metadata
 
     total_e2e_ms = int(time.time() * 1000) - int(started_at_ms)
-    # Merge worker-side timings (refine_query_ms, route_ms) with process result timings
     state_timings = (state_dict.get("metadata") or {}).get("timings_ms") or {}
     timings_ms = {**state_timings, **dict(metadata.get("timings_ms") or {})}
     processing_ms = timings_ms.get("processing_total") or timings_ms.get("knowledge_bank") or timings_ms.get("direct_llm") or timings_ms.get("total")
@@ -165,7 +164,6 @@ def _process_vector_search_synthesis(payload: dict) -> None:
     logger.info(f"Synthesizing vector-search answer for: {request_id}")
 
     state_dict = _load_request_state(request_id)
-    # Preserve vector_search_success status; only track that synthesis is in progress
     state_dict["tool"] = "vector_search"
     state_dict["synthesis_phase"] = "synthesizing"
     state_dict["session_id"] = session_id
@@ -216,7 +214,6 @@ def _process_vector_search_synthesis(payload: dict) -> None:
         )
     else:
         state_dict = _load_request_state(request_id)
-        # Merge worker-side timings (refine_query_ms, route_ms) into final metadata
         state_timings = (state_dict.get("metadata") or {}).get("timings_ms") or {}
         metadata.setdefault("timings_ms", {})
         metadata["timings_ms"] = {**state_timings, **metadata["timings_ms"]}
@@ -232,234 +229,248 @@ def _process_vector_search_synthesis(payload: dict) -> None:
         _save_request_state(request_id, state_dict)
         logger.info(f"Vector search synthesis completed for {request_id}")
 
-def process_message(ch, method, properties, body):
-    """Callback triggered when a message is pulled from text_query_queue."""
-    payload = json.loads(body)
-    request_id = payload.get("request_id")
-    query = payload.get("query")
-    user_id = payload.get("user_id")
-    
-    # Flags passed by the STT worker for voice queries
-    is_voice = payload.get("is_voice", False)
-    language = payload.get("language", "en")
-    session_id = payload.get("session_id") or user_id
 
-    if payload.get("stage") == "vector_search_synthesis":
-        try:
-            _process_vector_search_synthesis(payload)
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-        except Exception as e:
-            logger.error(f"Vector search synthesis failed for {request_id}: {e}")
-            frappe.log_error(f"Vector search synthesis error: {str(e)}", "RabbitMQ Worker")
-            _save_request_state(request_id, {
-                "status": "failed",
-                "error": str(e),
-                "query": query,
-                "user_id": user_id,
-                "session_id": session_id,
-            })
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        return
+class LLMWorker:
+    """
+    RabbitMQ consumer for text query processing.
 
-    logger.info(f"Picked up task: {request_id} | query: '{query}' | session: {session_id}")
+    Accepts an optional rabbitmq_url and queue name so tests can inject
+    a local broker without patching frappe.conf.
+    """
 
-    try:
-        # 1. Mark as in-progress for real-time UI feedback
-        state_dict = _load_request_state(request_id)
-        state_dict["status"] = "generating_answer"
-        state_dict["session_id"] = session_id
-        state_dict.setdefault("metadata", {})
-        state_dict["metadata"].setdefault("timings_ms", {})
-        _save_request_state(request_id, state_dict)
+    def __init__(
+        self,
+        rabbitmq_url: str | None = None,
+        queue: str = "text_query_queue",
+    ) -> None:
+        self.rabbitmq_url = rabbitmq_url or frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
+        self.queue = queue
 
-        # 2. Load history FIRST — needed for query refinement
-        chat_history = _get_history_from_cache(user_id, session_id=session_id)
+    def process_message(self, ch, method, properties, body):
+        """Callback triggered when a message is pulled from the queue."""
+        payload = json.loads(body)
+        request_id = payload.get("request_id")
+        query = payload.get("query")
+        user_id = payload.get("user_id")
+        is_voice = payload.get("is_voice", False)
+        language = payload.get("language", "en")
+        session_id = payload.get("session_id") or user_id
 
-        # 3. Fast-path routing on original query — BEFORE refinement.
-        #
-        #    Only UNCONDITIONAL KB intents (greetings, goodbyes, identity) skip
-        #    refinement — their meaning is fixed regardless of conversation history.
-        #
-        #    Context-dependent words (yes/ok/done/continue) are NOT fast-pathed here.
-        #    They go through refinement so that e.g. "yes" after a RAG response about
-        #    a TAP activity is resolved to the actual follow-up intent before routing,
-        #    rather than getting a generic KB reply.
-        refine_ms = 0
-        route_ms = 0
-        if match_fast_kb_unconditional(query):
-            primary_tool = "knowledge_bank"
-            refined_query = query
-        elif match_fast_sql(query):
-            primary_tool = "text_to_sql"
-            refined_query = query
-        else:
-            # 3a. Refine query with conversation context (follow-up resolution)
-            refined_query = query
-            refine_start = time.perf_counter()
+        if payload.get("stage") == "vector_search_synthesis":
             try:
-                result = _refine_query_with_history(query, chat_history) or query
-                if isinstance(result, str):
-                    refined_query = result
-            except Exception:
-                pass
-            refine_ms = int((time.perf_counter() - refine_start) * 1000)
+                _process_vector_search_synthesis(payload)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+            except Exception as e:
+                logger.error(f"Vector search synthesis failed for {request_id}: {e}")
+                frappe.log_error(f"Vector search synthesis error: {str(e)}", "RabbitMQ Worker")
+                _save_request_state(request_id, {
+                    "status": "failed",
+                    "error": str(e),
+                    "query": query,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                })
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
 
-            # 3b. Route on refined query
-            route_start = time.perf_counter()
-            primary_tool = choose_tool(refined_query)
-            route_ms = int((time.perf_counter() - route_start) * 1000)
+        logger.info(f"Picked up task: {request_id} | query: '{query}' | session: {session_id}")
 
-        # KB guard: content/navigation queries don't belong in knowledge_bank
-        if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
-            logger.debug(f"KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
-            primary_tool = "vector_search"
+        try:
+            state_dict = _load_request_state(request_id)
+            state_dict["status"] = "generating_answer"
+            state_dict["session_id"] = session_id
+            state_dict.setdefault("metadata", {})
+            state_dict["metadata"].setdefault("timings_ms", {})
+            _save_request_state(request_id, state_dict)
 
-        # 5. Update state with routing decision and timings
-        state_dict = _load_request_state(request_id)
-        state_dict["tool"] = primary_tool
-        state_dict["router_timing_ms"] = route_ms
-        state_dict["router_decision"] = {"tool": primary_tool, "status": "success"}
-        state_dict["metadata"]["timings_ms"].update({
-            "refine_query_ms": refine_ms,
-            "route_ms": route_ms,
-        })
-        if refined_query != query:
-            state_dict["metadata"]["refined_query"] = refined_query
-        _save_request_state(request_id, state_dict)
+            chat_history = _get_history_from_cache(user_id, session_id=session_id)
 
-        # 6. Execute vector search (retrieval + async synthesis)
-        if primary_tool == "vector_search":
-            vector_search_bundle = retrieve_vector_search(
-                query=query,
-                refined_query=refined_query,
-                chat_history=chat_history,
-            )
+            refine_ms = 0
+            route_ms = 0
+            if match_fast_kb_unconditional(query):
+                primary_tool = "knowledge_bank"
+                refined_query = query
+            elif match_fast_sql(query):
+                primary_tool = "text_to_sql"
+                refined_query = query
+            else:
+                refined_query = query
+                refine_start = time.perf_counter()
+                try:
+                    result = _refine_query_with_history(query, chat_history) or query
+                    if isinstance(result, str):
+                        refined_query = result
+                except Exception:
+                    pass
+                refine_ms = int((time.perf_counter() - refine_start) * 1000)
 
-            if not vector_search_bundle.get("success"):
+                route_start = time.perf_counter()
+                primary_tool = choose_tool(refined_query)
+                route_ms = int((time.perf_counter() - route_start) * 1000)
+
+            if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
+                logger.debug(f"KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
+                primary_tool = "vector_search"
+
+            state_dict = _load_request_state(request_id)
+            state_dict["tool"] = primary_tool
+            state_dict["router_timing_ms"] = route_ms
+            state_dict["router_decision"] = {"tool": primary_tool, "status": "success"}
+            state_dict["metadata"]["timings_ms"].update({
+                "refine_query_ms": refine_ms,
+                "route_ms": route_ms,
+            })
+            if refined_query != query:
+                state_dict["metadata"]["refined_query"] = refined_query
+            _save_request_state(request_id, state_dict)
+
+            if primary_tool == "vector_search":
+                vector_search_bundle = retrieve_vector_search(
+                    query=query,
+                    refined_query=refined_query,
+                    chat_history=chat_history,
+                )
+
+                if not vector_search_bundle.get("success"):
+                    state_dict.update({
+                        "status": "vector_search_failed",
+                        "tool": "vector_search",
+                        "error": vector_search_bundle.get("error") or "Vector search failed.",
+                        "vector_search": {
+                            "status": "failed",
+                            "raw_status": "vector_search_failed",
+                            "results_count": vector_search_bundle.get("results_count") or 0,
+                            "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
+                            "search_time": vector_search_bundle.get("search_time"),
+                            "metadata": vector_search_bundle.get("metadata") or {},
+                        },
+                        "metadata": vector_search_bundle.get("metadata") or {},
+                    })
+                    _save_request_state(request_id, state_dict)
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+
                 state_dict.update({
-                    "status": "vector_search_failed",
+                    "status": "vector_search_success",
                     "tool": "vector_search",
-                    "error": vector_search_bundle.get("error") or "Vector search failed.",
+                    "router_decision": {
+                        "tool": "vector_search",
+                        "status": "success",
+                    },
                     "vector_search": {
-                        "status": "failed",
-                        "raw_status": "vector_search_failed",
+                        "status": "success",
+                        "raw_status": "vector_search_success",
                         "results_count": vector_search_bundle.get("results_count") or 0,
                         "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
                         "search_time": vector_search_bundle.get("search_time"),
                         "metadata": vector_search_bundle.get("metadata") or {},
+                        "phase_complete": True,
                     },
                     "metadata": vector_search_bundle.get("metadata") or {},
                 })
                 _save_request_state(request_id, state_dict)
+
+                _publish_vector_search_synthesis(
+                    request_id=request_id,
+                    query=query,
+                    user_id=user_id,
+                    session_id=session_id,
+                    context_text=vector_search_bundle.get("context_text") or "",
+                    is_voice=is_voice,
+                )
+                logger.info(f"Vector search completed for {request_id}; synthesis queued")
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
-            state_dict.update({
-                "status": "vector_search_success",
-                "tool": "vector_search",
-                "router_decision": {
-                    "tool": "vector_search",
-                    "status": "success",
-                },
-                "vector_search": {
-                    "status": "success",
-                    "raw_status": "vector_search_success",
-                    "results_count": vector_search_bundle.get("results_count") or 0,
-                    "routed_doctypes": vector_search_bundle.get("routed_doctypes") or [],
-                    "search_time": vector_search_bundle.get("search_time"),
-                    "metadata": vector_search_bundle.get("metadata") or {},
-                    "phase_complete": True,
-                },
-                "metadata": vector_search_bundle.get("metadata") or {},
-            })
-            _save_request_state(request_id, state_dict)
-
-            _publish_vector_search_synthesis(
-                request_id=request_id,
+            out = process_query(
                 query=query,
-                user_id=user_id,
-                session_id=session_id,
-                context_text=vector_search_bundle.get("context_text") or "",
-                is_voice=is_voice,
+                chat_history=chat_history,
+                voice_mode=is_voice,
+                primary_tool=primary_tool,
+                refined_query=refined_query,
             )
-            logger.info(f"Vector search completed for {request_id}; synthesis queued")
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            return
+            answer = out.get("answer", "")
+            resolved_tool = _resolve_result_tool(out, primary_tool)
 
-        # 7. Run the existing router logic for SQL/direct flows
-        out = process_query(
-            query=query,
-            chat_history=chat_history,
-            voice_mode=is_voice,
-            primary_tool=primary_tool,
-            refined_query=refined_query,
-        )
-        answer = out.get("answer", "")
-        resolved_tool = _resolve_result_tool(out, primary_tool)
+            new_messages = [
+                {"role": "user", "content": query},
+                {"role": "assistant", "content": answer},
+            ]
+            chat_history.extend(new_messages)
+            _save_history_to_cache(user_id, new_messages, session_id=session_id)
+            _append_history_to_db(
+                user_id,
+                new_messages,
+                session_id=session_id,
+                metadata={"source": "llm_worker"},
+            )
 
-        # 5. Update and save history
-        new_messages = [
-            {"role": "user", "content": query},
-            {"role": "assistant", "content": answer},
-        ]
-        chat_history.extend(new_messages)
-        _save_history_to_cache(user_id, new_messages, session_id=session_id)
-        _append_history_to_db(
-            user_id,
-            new_messages,
-            session_id=session_id,
-            metadata={"source": "llm_worker"},
-        )
+            if is_voice:
+                metadata = out.get("metadata", {}) or {}
+                if state_dict.get("metadata"):
+                    existing_metadata = state_dict.get("metadata") or {}
+                    existing_timings = existing_metadata.get("timings_ms") or {}
+                    out_timings = metadata.get("timings_ms") or {}
+                    metadata["timings_ms"] = {**existing_timings, **out_timings}
 
-        # 6. Routing Logic (Voice vs Text)
-        if is_voice:
-            metadata = out.get("metadata", {}) or {}
-            if state_dict.get("metadata"):
-                existing_metadata = state_dict.get("metadata") or {}
-                existing_timings = existing_metadata.get("timings_ms") or {}
-                out_timings = metadata.get("timings_ms") or {}
-                metadata["timings_ms"] = {**existing_timings, **out_timings}
-
-            if _tts_enabled_for_voice():
-                # Update state so the frontend knows text is done, audio is next.
-                metadata = _apply_end_to_end_timing(state_dict, metadata)
-                state_dict.update({
-                    "status": "text_generated",
-                    "answer_text": answer,
-                    "language": language,
-                    "transcribed_text": query,
-                    "session_id": session_id,
-                    "metadata": metadata,
-                    "tool": resolved_tool,
-                    "router_decision": {
+                if _tts_enabled_for_voice():
+                    metadata = _apply_end_to_end_timing(state_dict, metadata)
+                    state_dict.update({
+                        "status": "text_generated",
+                        "answer_text": answer,
+                        "language": language,
+                        "transcribed_text": query,
+                        "session_id": session_id,
+                        "metadata": metadata,
                         "tool": resolved_tool,
+                        "router_decision": {
+                            "tool": resolved_tool,
+                            "status": "success",
+                        },
+                        "timing_ms": metadata.get("timings_ms", {}).get("total"),
+                    })
+                    _save_request_state(request_id, state_dict)
+                    publish_to_queue("audio_tts_queue", {
+                        "request_id": request_id,
+                        "answer": answer,
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "language": language,
+                        "transcribed_text": query
+                    })
+                    logger.info(f"Voice detected: routed {request_id} to audio_tts_queue")
+                else:
+                    metadata = _apply_end_to_end_timing(state_dict, metadata)
+                    state_dict.update({
                         "status": "success",
-                    },
-                    "timing_ms": metadata.get("timings_ms", {}).get("total"),
-                })
-                _save_request_state(request_id, state_dict)
+                        "answer": answer,
+                        "answer_text": answer,
+                        "audio_url": None,
+                        "query": query,
+                        "transcribed_text": query,
+                        "language": language,
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "history": chat_history[-10:],
+                        "metadata": metadata,
+                        "tool": resolved_tool,
+                        "router_decision": {
+                            "tool": resolved_tool,
+                            "status": "success",
+                        },
+                        "timing_ms": metadata.get("timings_ms", {}).get("total"),
+                    })
+                    state_dict.setdefault("metadata", {})
+                    state_dict["metadata"]["tts_skipped"] = True
+                    _save_request_state(request_id, state_dict)
+                    logger.info(f"Voice task {request_id} completed as text-only (TTS disabled)")
 
-                # Publish to TTS queue for the final voice step.
-                publish_to_queue("audio_tts_queue", {
-                    "request_id": request_id,
-                    "answer": answer,
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "language": language,
-                    "transcribed_text": query
-                })
-                logger.info(f"Voice detected: routed {request_id} to audio_tts_queue")
             else:
-                # Text-only fast path for voice mode: finalize immediately.
-                metadata = _apply_end_to_end_timing(state_dict, metadata)
+                metadata = _apply_end_to_end_timing(state_dict, out.get("metadata", {}) or {})
                 state_dict.update({
                     "status": "success",
                     "answer": answer,
-                    "answer_text": answer,
-                    "audio_url": None,
                     "query": query,
-                    "transcribed_text": query,
-                    "language": language,
                     "user_id": user_id,
                     "session_id": session_id,
                     "history": chat_history[-10:],
@@ -471,63 +482,38 @@ def process_message(ch, method, properties, body):
                     },
                     "timing_ms": metadata.get("timings_ms", {}).get("total"),
                 })
-                state_dict.setdefault("metadata", {})
-                state_dict["metadata"]["tts_skipped"] = True
                 _save_request_state(request_id, state_dict)
-                logger.info(f"Voice task {request_id} completed as text-only (TTS disabled)")
+                logger.info(f"Task {request_id} completed successfully")
 
-        else:
-            # Standard Text Query - Finish and save to Redis
-            metadata = _apply_end_to_end_timing(state_dict, out.get("metadata", {}) or {})
-
-            state_dict.update({
-                "status": "success",
-                "answer": answer,
+        except Exception as e:
+            logger.error(f"Task {request_id} failed: {e}")
+            frappe.log_error(f"LLM Worker Error: {str(e)}", "RabbitMQ Worker")
+            _save_request_state(request_id, {
+                "status": "failed",
+                "error": str(e),
                 "query": query,
                 "user_id": user_id,
-                "session_id": session_id,
-                "history": chat_history[-10:],
-                "metadata": metadata,
-                "tool": resolved_tool,
-                "router_decision": {
-                    "tool": resolved_tool,
-                    "status": "success",
-                },
-                "timing_ms": metadata.get("timings_ms", {}).get("total"),
             })
-            _save_request_state(request_id, state_dict)
-            logger.info(f"Task {request_id} completed successfully")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
 
-    except Exception as e:
-        logger.error(f"Task {request_id} failed: {e}")
-        frappe.log_error(f"LLM Worker Error: {str(e)}", "RabbitMQ Worker")
-        _save_request_state(request_id, {
-            "status": "failed",
-            "error": str(e),
-            "query": query,
-            "user_id": user_id,
-        })
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        return
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
-    ch.basic_ack(delivery_tag=method.delivery_tag)
+    def start(self) -> None:
+        """Initialize RabbitMQ connection and begin consuming."""
+        try:
+            parameters = pika.URLParameters(self.rabbitmq_url)
+            connection = pika.BlockingConnection(parameters)
+            channel = connection.channel()
+            channel.queue_declare(queue=self.queue, durable=True)
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue=self.queue, on_message_callback=self.process_message)
+            logger.info(f"LLM Worker running on '{self.queue}'. Waiting for messages. (CTRL+C to exit)")
+            channel.start_consuming()
+        except Exception as e:
+            logger.critical(f"Worker crashed: {e}")
 
 
 def start():
-    """Initializes RabbitMQ connection and starts consuming."""
-    rabbitmq_url = frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
-    
-    try:
-        parameters = pika.URLParameters(rabbitmq_url)
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-
-        channel.queue_declare(queue="text_query_queue", durable=True)
-        channel.basic_qos(prefetch_count=1) # Process one message at a time
-        channel.basic_consume(queue="text_query_queue", on_message_callback=process_message)
-
-        logger.info("LLM Worker running. Waiting for messages. (CTRL+C to exit)")
-        channel.start_consuming()
-
-    except Exception as e:
-        logger.critical(f"Worker crashed: {e}")
+    """Entry point called by the worker runner."""
+    LLMWorker().start()
