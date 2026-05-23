@@ -216,7 +216,7 @@ def _log_query(
             "tool": tool,
             "answer_source": answer_source,
             "language": language or "en",
-            "is_voice": 1 if is_voice else 0,
+            "is_voice": "Yes" if is_voice else "No",
             "timing_ms": timings.get("end_to_end") or timings.get("total"),
             "route_ms": timings.get("route_ms"),
             "processing_ms": timings.get("processing") or timings.get("processing_total"),
