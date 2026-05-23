@@ -1,0 +1,57 @@
+{
+ "cards": [
+  {
+   "card": "Avg Response (ms)"
+  },
+  {
+   "card": "Failures Today"
+  },
+  {
+   "card": "Success Rate"
+  },
+  {
+   "card": "KB Exact Hits"
+  },
+  {
+   "card": "Total Queries"
+  }
+ ],
+ "charts": [
+  {
+   "chart": "Answer Source Breakdown",
+   "width": "Half"
+  },
+  {
+   "chart": "Engine Distribution",
+   "width": "Half"
+  },
+  {
+   "chart": "Queries Over Time",
+   "width": "Half"
+  },
+  {
+   "chart": "Success vs Failed",
+   "width": "Half"
+  },
+  {
+   "chart": "Top KB Categories",
+   "width": "Half"
+  },
+  {
+   "chart": "Voice vs Text",
+   "width": "Half"
+  }
+ ],
+ "creation": "2026-05-23 21:42:04.049801",
+ "dashboard_name": "TAP AI Analytics",
+ "docstatus": 0,
+ "doctype": "Dashboard",
+ "idx": 0,
+ "is_default": 1,
+ "is_standard": 1,
+ "modified": "2026-05-23 21:42:04.049801",
+ "modified_by": "Administrator",
+ "module": "Tap AI",
+ "name": "TAP AI Analytics",
+ "owner": "Administrator"
+}
