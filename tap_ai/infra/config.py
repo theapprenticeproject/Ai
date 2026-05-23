@@ -1,6 +1,7 @@
 # infra/config.py
 
 from typing import Any, Dict
+from loguru import logger
 
 def _try_import_frappe():
     try:
@@ -31,7 +32,7 @@ class TAPConfig:
 
 
         self._config = site_config or {}
-        print("[tap_ai] Configuration loaded")
+        logger.debug("tap_ai configuration loaded")
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._config.get(key, default)
@@ -44,9 +45,9 @@ class TAPConfig:
             "openai_ready": bool(self.get("openai_api_key")),
             "redis_ready": bool(self.get("redis_url")) and self.is_enabled("redis"),
         }
-        print("Service status:")
         for service, ready in status.items():
-            print(f"  {'[ok]' if ready else '[not configured]'} {service}")
+            level = "info" if ready else "warning"
+            getattr(logger, level)(f"Service {service}: {'ok' if ready else 'not configured'}")
         return status
 
 # Global instance + helpers

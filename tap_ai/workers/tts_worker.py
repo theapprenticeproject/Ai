@@ -7,6 +7,7 @@ import pika
 import os
 import uuid
 from openai import OpenAI
+from loguru import logger
 from frappe.utils import get_url
 
 def get_openai_client():
@@ -22,7 +23,7 @@ def process_message(ch, method, properties, body):
     language = payload.get("language", "en")
     transcribed_text = payload.get("transcribed_text", "")
 
-    print(f"\n[*] [TTS Worker] Generating audio for {request_id}")
+    logger.info(f"TTS Worker generating audio for {request_id}")
 
     try:
         # Update state
@@ -67,12 +68,11 @@ def process_message(ch, method, properties, body):
         })
         frappe.cache().set(request_id, json.dumps(state_dict))
         
-        print(f"[ok] {request_id} audio generated: {public_audio_url}")
+        logger.info(f"{request_id} audio generated: {public_audio_url}")
 
     except Exception as e:
-        print(f"[x] TTS failed for {request_id}: {str(e)}")
+        logger.error(f"TTS failed for {request_id}: {e}")
         frappe.cache().set(request_id, json.dumps({"status": "failed", "error": str(e)}))
-        print(f"[TTS Worker] cache.set: request_id={request_id} status=failed error={str(e)} ts={int(time.time())}")
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -85,7 +85,7 @@ def start():
         channel.queue_declare(queue="audio_tts_queue", durable=True)
         channel.basic_qos(prefetch_count=1)
         channel.basic_consume(queue="audio_tts_queue", on_message_callback=process_message)
-        print(" [*] TTS Worker running. Waiting for messages...")
+        logger.info("TTS Worker running. Waiting for messages.")
         channel.start_consuming()
     except Exception as e:
-        print(f"[!] TTS Worker crashed: {str(e)}")
+        logger.critical(f"TTS Worker crashed: {e}")

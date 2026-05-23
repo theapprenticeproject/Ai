@@ -10,6 +10,7 @@ import uuid
 import traceback
 from urllib.parse import urlparse
 from openai import OpenAI
+from loguru import logger
 from tap_ai.utils.mq import publish_to_queue
 
 SUPPORTED_AUDIO_EXTENSIONS = {"mp3", "wav", "m4a", "ogg", "webm", "flac", "mp4", "mpeg", "mpga"}
@@ -51,7 +52,7 @@ def process_message(ch, method, properties, body):
     response = None
     stt_started_at_ms = int(time.time() * 1000)
 
-    print(f"\n[*] [STT Worker] Processing {request_id} from {audio_url}")
+    logger.info(f"STT Worker processing {request_id} from {audio_url}")
 
     try:
         # Update state
@@ -81,7 +82,7 @@ def process_message(ch, method, properties, body):
         text = transcript.text.strip()
         language = detect_intent_language(client, text)
         
-        print(f"[>] Transcribed: '{text}' (Language: {language})")
+        logger.info(f"Transcribed: '{text}' (language: {language})")
 
         # Update intermediate state
         state_dict.update({
@@ -103,7 +104,7 @@ def process_message(ch, method, properties, body):
             "is_voice": True, # Crucial flag so LLM knows to send it to TTS next
             "language": language
         })
-        print(f"[ok] {request_id} routed to LLM Worker")
+        logger.info(f"{request_id} routed to LLM Worker")
 
     except Exception as e:
         err_type = type(e).__name__
@@ -117,9 +118,9 @@ def process_message(ch, method, properties, body):
             "content_type": response.headers.get("Content-Type") if response is not None else None,
         }
 
-        print(f"[x] STT failed for {request_id}: {error_message}")
-        print(f"[x] STT context: {json.dumps(error_context, default=str)}")
-        print(f"[x] STT traceback:\n{tb}")
+        logger.error(f"STT failed for {request_id}: {error_message}")
+        logger.debug(f"STT context: {json.dumps(error_context, default=str)}")
+        logger.debug(f"STT traceback:\n{tb}")
 
         frappe.log_error(
             message=(
@@ -155,7 +156,7 @@ def start():
         channel.queue_declare(queue="audio_stt_queue", durable=True)
         channel.basic_qos(prefetch_count=1)
         channel.basic_consume(queue="audio_stt_queue", on_message_callback=process_message)
-        print(" [*] STT Worker running. Waiting for messages...")
+        logger.info("STT Worker running. Waiting for messages.")
         channel.start_consuming()
     except Exception as e:
-        print(f"[!] STT Worker crashed: {str(e)}")
+        logger.critical(f"STT Worker crashed: {e}")

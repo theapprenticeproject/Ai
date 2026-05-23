@@ -14,6 +14,7 @@ import time
 from typing import Dict, Any, List, Optional
 
 import frappe
+from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
@@ -111,7 +112,7 @@ def _refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str
             temperature=0.0,
             max_tokens=120,
         )
-        print(f"> Refined Query: {refined}")
+        logger.debug(f"Refined query: {refined}")
         return refined
     except Exception as e:
         frappe.log_error(f"Query refiner failed: {e}")
@@ -585,7 +586,7 @@ def answer_from_pinecone(
     def _stamp(stage_name: str, t0: float):
         timings_ms[stage_name] = int((time.time() - t0) * 1000)
 
-    print("> Starting Vector RAG process...")
+    logger.info("Starting Vector RAG process")
 
     effective_k = _effective_k(k)
 
@@ -594,7 +595,7 @@ def answer_from_pinecone(
     if refined_query is None:
         refined_query = _refine_query_with_history(query, chat_history)
     else:
-        print(f"> Using pre-refined query from router: {refined_query}")
+        logger.debug(f"Using pre-refined query from router: {refined_query}")
     _stamp("refine_query", t_refine)
 
     # 2. Build metadata filters
@@ -617,7 +618,7 @@ def answer_from_pinecone(
 
     if not matches:
         timings_ms["total"] = int((time.time() - start) * 1000)
-        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
+        logger.debug(f"RAG timings (ms): {json.dumps(timings_ms)}")
         return {
             "question": query,
             "answer": "I couldn't find relevant information for your question.",
@@ -635,7 +636,7 @@ def answer_from_pinecone(
 
     if not context_text.strip():
         timings_ms["total"] = int((time.time() - start) * 1000)
-        print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
+        logger.debug(f"RAG timings (ms): {json.dumps(timings_ms)}")
         return {
             "question": query,
             "answer": "I found references but not enough details to answer confidently.",
@@ -658,8 +659,8 @@ def answer_from_pinecone(
 
     elapsed = round(time.time() - start, 2)
     timings_ms["total"] = int((time.time() - start) * 1000)
-    print(f"> RAG timings (ms): {json.dumps(timings_ms)}")
-    print(f"> RAG context stats: {json.dumps(ctx.get('stats') or {})}")
+    logger.debug(f"RAG timings (ms): {json.dumps(timings_ms)}")
+    logger.debug(f"RAG context stats: {json.dumps(ctx.get('stats') or {})}")
 
     return {
         "question": query,

@@ -1,5 +1,6 @@
 import frappe
 import time
+from loguru import logger
 
 
 # Wait constants
@@ -44,20 +45,18 @@ def delay(delay_seconds: int | None = None):
         caller = getattr(frappe.local, "request_ip", None) or (frappe.local.request.environ.get('REMOTE_ADDR') if getattr(frappe.local, 'request', None) else None)
     except Exception:
         caller = None
-    print(f"> Webhook delay called: caller={caller} delay_seconds={delay_seconds} ts={int(time.time())}")
+    logger.debug(f"Webhook delay called: caller={caller} delay_seconds={delay_seconds}")
 
     waited = 0
     try:
         if delay_seconds > 0:
-            # Use sleep but guard against interruptions — always return a stable JSON
             time.sleep(delay_seconds)
             waited = delay_seconds
     except Exception as e:
-        print(f"> Webhook delay interrupted for caller={caller}: {e}")
-        # continue to return a structured payload
+        logger.warning(f"Webhook delay interrupted for caller={caller}: {e}")
 
     resp = {"success": True, "waited_seconds": waited}
-    print(f"> Webhook delay returning: caller={caller} payload={resp} ts={int(time.time())}")
+    logger.debug(f"Webhook delay returning: caller={caller} waited={waited}s")
     return resp
 
 
