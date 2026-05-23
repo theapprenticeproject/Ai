@@ -326,6 +326,13 @@ def lookup_exact_direct_response(
 	entries = get_direct_response_entries()
 	query_norm = normalize_text(query)
 
+	# normalize_text strips all non-ASCII (including emojis), so a pure-emoji
+	# query produces query_norm="" which falsely equals any emoji-only alternate
+	# query (e.g. "👋" also normalizes to ""). Skip exact matching in this case
+	# and let the LLM stage handle it with full KB context.
+	if not query_norm:
+		return None
+
 	for entry in entries:
 		if not entry or not entry.get("is_active", 1):
 			continue
