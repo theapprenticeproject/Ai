@@ -566,7 +566,7 @@ def cli(q: str, user_id: str = "default_user"):
     
     """
 
-    logger.info(“TAP AI ROUTER - CLI”)
+    logger.info("TAP AI ROUTER - CLI")
 
     history = _get_history_from_cache(user_id)
 
