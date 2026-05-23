@@ -1,4 +1,23 @@
 # tap_ai/workers/tts_worker.py
+"""
+TTS Worker — text-to-speech synthesis step.
+
+Consumes messages from `audio_tts_queue`. For each message:
+    1. Generates an MP3 audio file using OpenAI TTS (`tts-1`, voice: alloy)
+    2. Saves it to the Frappe File Manager as a public file
+    3. Cleans up the temporary /tmp file
+    4. Updates Redis state to `success` with the public audio URL
+
+Only active when `tap_ai_enable_voice_tts = 1` in site_config.json. When TTS
+is disabled, the LLM Worker finalizes the voice request as text-only instead
+of enqueuing here.
+
+Worker class: TTSWorker (injectable rabbitmq_url for testing)
+Entry point:  start()  (called by the worker runner)
+
+Config keys (site_config.json):
+    openai_api_key, rabbitmq_url, tap_ai_enable_voice_tts
+"""
 
 import frappe
 import time
@@ -7,85 +26,104 @@ import pika
 import os
 import uuid
 from openai import OpenAI
+from loguru import logger
 from frappe.utils import get_url
 
-def get_openai_client():
+
+def _get_openai_client() -> OpenAI:
     api_key = frappe.conf.get("openai_api_key")
     if not api_key:
         frappe.throw("OpenAI API key not found")
     return OpenAI(api_key=api_key)
 
-def process_message(ch, method, properties, body):
-    payload = json.loads(body)
-    request_id = payload.get("request_id")
-    answer = payload.get("answer")
-    language = payload.get("language", "en")
-    transcribed_text = payload.get("transcribed_text", "")
 
-    print(f"\n[*] [TTS Worker] Generating audio for {request_id}")
+class TTSWorker:
+    """
+    RabbitMQ consumer for text-to-speech synthesis.
 
-    try:
-        # Update state
-        current_state = frappe.cache().get(request_id)
-        state_dict = json.loads(current_state) if current_state else {}
-        state_dict["status"] = "generating_audio"
-        frappe.cache().set(request_id, json.dumps(state_dict))
+    Generates audio via OpenAI TTS, saves it to the Frappe File Manager,
+    and updates the Redis request state with the public audio URL.
 
-        client = get_openai_client()
-        output_path = f"/tmp/{uuid.uuid4().hex}.mp3"
+    Accepts optional rabbitmq_url and queue so tests can inject a local broker.
+    """
 
-        # Generate Speech
-        with client.audio.speech.with_streaming_response.create(
-            model="tts-1",
-            voice="alloy",
-            input=answer
-        ) as r:
-            r.stream_to_file(output_path)
+    def __init__(
+        self,
+        rabbitmq_url: str | None = None,
+        queue: str = "audio_tts_queue",
+    ) -> None:
+        self.rabbitmq_url = rabbitmq_url or frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
+        self.queue = queue
 
-        # Save to Frappe File Manager
-        with open(output_path, "rb") as f:
-            file_doc = frappe.get_doc({
-                "doctype": "File",
-                "file_name": os.path.basename(output_path),
-                "is_private": 0,
-                "content": f.read()
+    def process_message(self, ch, method, properties, body):
+        payload = json.loads(body)
+        request_id = payload.get("request_id")
+        answer = payload.get("answer")
+        language = payload.get("language", "en")
+        transcribed_text = payload.get("transcribed_text", "")
+
+        logger.info(f"TTS Worker generating audio for {request_id}")
+
+        try:
+            current_state = frappe.cache().get(request_id)
+            state_dict = json.loads(current_state) if current_state else {}
+            state_dict["status"] = "generating_audio"
+            frappe.cache().set(request_id, json.dumps(state_dict))
+
+            client = _get_openai_client()
+            output_path = f"/tmp/{uuid.uuid4().hex}.mp3"
+
+            with client.audio.speech.with_streaming_response.create(
+                model="tts-1",
+                voice="alloy",
+                input=answer
+            ) as r:
+                r.stream_to_file(output_path)
+
+            with open(output_path, "rb") as f:
+                file_doc = frappe.get_doc({
+                    "doctype": "File",
+                    "file_name": os.path.basename(output_path),
+                    "is_private": 0,
+                    "content": f.read()
+                })
+                file_doc.insert(ignore_permissions=True)
+
+            if os.path.exists(output_path):
+                os.remove(output_path)
+
+            public_audio_url = get_url(file_doc.file_url)
+            state_dict.update({
+                "status": "success",
+                "audio_url": public_audio_url,
+                "answer_text": answer,
+                "transcribed_text": transcribed_text,
+                "language": language
             })
-            file_doc.insert(ignore_permissions=True)
+            frappe.cache().set(request_id, json.dumps(state_dict))
+            logger.info(f"{request_id} audio generated: {public_audio_url}")
 
-        # Cleanup temp file
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        except Exception as e:
+            logger.error(f"TTS failed for {request_id}: {e}")
+            frappe.cache().set(request_id, json.dumps({"status": "failed", "error": str(e)}))
 
-        # Final Success State
-        public_audio_url = get_url(file_doc.file_url)
-        state_dict.update({
-            "status": "success",
-            "audio_url": public_audio_url,
-            "answer_text": answer,
-            "transcribed_text": transcribed_text,
-            "language": language
-        })
-        frappe.cache().set(request_id, json.dumps(state_dict))
-        
-        print(f"[ok] {request_id} audio generated: {public_audio_url}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
-    except Exception as e:
-        print(f"[x] TTS failed for {request_id}: {str(e)}")
-        frappe.cache().set(request_id, json.dumps({"status": "failed", "error": str(e)}))
-        print(f"[TTS Worker] cache.set: request_id={request_id} status=failed error={str(e)} ts={int(time.time())}")
+    def start(self) -> None:
+        """Initialize RabbitMQ connection and begin consuming."""
+        try:
+            parameters = pika.URLParameters(self.rabbitmq_url)
+            connection = pika.BlockingConnection(parameters)
+            channel = connection.channel()
+            channel.queue_declare(queue=self.queue, durable=True)
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue=self.queue, on_message_callback=self.process_message)
+            logger.info(f"TTS Worker running on '{self.queue}'. Waiting for messages.")
+            channel.start_consuming()
+        except Exception as e:
+            logger.critical(f"TTS Worker crashed: {e}")
 
-    ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def start():
-    rabbitmq_url = frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
-    try:
-        parameters = pika.URLParameters(rabbitmq_url)
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        channel.queue_declare(queue="audio_tts_queue", durable=True)
-        channel.basic_qos(prefetch_count=1)
-        channel.basic_consume(queue="audio_tts_queue", on_message_callback=process_message)
-        print(" [*] TTS Worker running. Waiting for messages...")
-        channel.start_consuming()
-    except Exception as e:
-        print(f"[!] TTS Worker crashed: {str(e)}")
+    """Entry point called by the worker runner."""
+    TTSWorker().start()

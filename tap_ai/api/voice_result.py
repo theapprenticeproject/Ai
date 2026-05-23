@@ -1,4 +1,23 @@
 # tap_ai/api/voice_result.py
+"""
+Voice-specific result polling endpoint.
+
+Extends the three-phase result API with an additional `transcribe` phase
+that lets the caller detect when speech-to-text is complete before waiting
+for the LLM answer. Phases in order:
+
+    phase=transcribe → waits until Whisper transcription is done (~12 s)
+    phase=router     → delegates to result.result(phase="router")
+    phase=search     → delegates to result.result(phase="search")
+    phase=answer     → delegates to result.result(phase="answer")
+
+This four-step sequence maps to Glific's chained webhook flow:
+    audio_url → [transcribe poll] → [router poll] → [search poll] → [answer poll]
+
+Endpoint:
+    GET /api/method/tap_ai.api.voice_result.voice_result
+    Params: request_id, phase (transcribe|router|search|answer), wait_seconds, poll_interval_ms
+"""
 
 import time
 import frappe

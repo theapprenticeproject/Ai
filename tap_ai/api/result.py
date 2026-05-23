@@ -1,4 +1,23 @@
 # tap_ai/api/result.py
+"""
+Three-phase result polling endpoint.
+
+Glific workflows have a hard 10-second HTTP timeout, so a single long-poll
+is not viable. Instead, the client polls in three sequential phases, each
+with a ~9-second wait and 200 ms poll interval:
+
+    phase=router  → returns once routing decision is written to Redis
+    phase=search  → returns once Pinecone vector search completes
+    phase=answer  → returns once the final answer is synthesized
+
+Each phase response includes `phase_complete`, `next_phase`, and the
+full normalized result envelope so the caller can display intermediate
+progress (e.g. "thinking…", "searching knowledge…").
+
+Endpoint:
+    GET /api/method/tap_ai.api.result.result
+    Params: request_id, phase (router|search|answer), wait_seconds, poll_interval_ms
+"""
 
 import frappe
 import json

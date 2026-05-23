@@ -1,3 +1,14 @@
+"""
+RabbitMQ queue metrics endpoint.
+
+Exposes a single GET endpoint that returns publish counts, average latency,
+and error rate for the RabbitMQ message queue. Useful for monitoring worker
+health in dashboards or alerting pipelines.
+
+Endpoint:
+    GET /api/method/tap_ai.api.metrics.queue_metrics
+"""
+
 import frappe
 from tap_ai.utils.mq import get_queue_metrics
 

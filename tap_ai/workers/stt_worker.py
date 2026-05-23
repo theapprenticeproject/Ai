@@ -1,4 +1,23 @@
 # tap_ai/workers/stt_worker.py
+"""
+STT Worker — speech-to-text transcription step.
+
+Consumes messages from `audio_stt_queue`. For each message:
+    1. Downloads the audio file from the provided URL
+    2. Transcribes it using OpenAI Whisper (`whisper-1`)
+    3. Detects the spoken language using GPT-4o-mini
+    4. Updates Redis state to `transcribed`
+    5. Publishes the transcript to `text_query_queue` for the LLM Worker
+
+Audio files are downloaded to /tmp and cleaned up after transcription
+regardless of success or failure.
+
+Worker class: STTWorker (injectable rabbitmq_url for testing)
+Entry point:  start()  (called by the worker runner)
+
+Config keys (site_config.json):
+    openai_api_key, rabbitmq_url
+"""
 
 import frappe
 import json
@@ -10,17 +29,20 @@ import uuid
 import traceback
 from urllib.parse import urlparse
 from openai import OpenAI
+from loguru import logger
 from tap_ai.utils.mq import publish_to_queue
 
 SUPPORTED_AUDIO_EXTENSIONS = {"mp3", "wav", "m4a", "ogg", "webm", "flac", "mp4", "mpeg", "mpga"}
 
-def get_openai_client():
+
+def _get_openai_client() -> OpenAI:
     api_key = frappe.conf.get("openai_api_key")
     if not api_key:
         frappe.throw("OpenAI API key not found")
     return OpenAI(api_key=api_key)
 
-def get_audio_extension(audio_url, content_type):
+
+def _get_audio_extension(audio_url: str, content_type: str | None) -> str:
     path = urlparse(audio_url).path
     ext = os.path.splitext(path)[1].replace(".", "").lower()
     if ext in SUPPORTED_AUDIO_EXTENSIONS:
@@ -31,7 +53,8 @@ def get_audio_extension(audio_url, content_type):
             return guessed
     return "mp3"
 
-def detect_intent_language(client, text: str) -> str:
+
+def _detect_intent_language(client: OpenAI, text: str) -> str:
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -42,120 +65,139 @@ def detect_intent_language(client, text: str) -> str:
     )
     return completion.choices[0].message.content.strip().lower()
 
-def process_message(ch, method, properties, body):
-    payload = json.loads(body)
-    request_id = payload.get("request_id")
-    audio_url = payload.get("audio_url")
-    user_id = payload.get("user_id")
-    input_path = None
-    response = None
-    stt_started_at_ms = int(time.time() * 1000)
 
-    print(f"\n[*] [STT Worker] Processing {request_id} from {audio_url}")
+class STTWorker:
+    """
+    RabbitMQ consumer for speech-to-text transcription.
 
-    try:
-        # Update state
-        current_state = frappe.cache().get(request_id)
-        state_dict = json.loads(current_state) if current_state else {}
-        state_dict["status"] = "transcribing"
-        frappe.cache().set(request_id, json.dumps(state_dict))
+    Downloads audio from a URL, transcribes via Whisper, detects language,
+    then forwards the text to the LLM worker queue.
 
-        client = get_openai_client()
+    Accepts optional rabbitmq_url and queue so tests can inject a local broker.
+    """
 
-        # Download audio
-        response = requests.get(audio_url, timeout=20)
-        response.raise_for_status()
-        ext = get_audio_extension(audio_url, response.headers.get("Content-Type"))
-        input_path = f"/tmp/{uuid.uuid4().hex}.{ext}"
+    def __init__(
+        self,
+        rabbitmq_url: str | None = None,
+        queue: str = "audio_stt_queue",
+    ) -> None:
+        self.rabbitmq_url = rabbitmq_url or frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
+        self.queue = queue
 
-        with open(input_path, "wb") as f:
-            f.write(response.content)
+    def process_message(self, ch, method, properties, body):
+        payload = json.loads(body)
+        request_id = payload.get("request_id")
+        audio_url = payload.get("audio_url")
+        user_id = payload.get("user_id")
+        input_path = None
+        response = None
+        stt_started_at_ms = int(time.time() * 1000)
 
-        # STT via OpenAI
-        with open(input_path, "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1", # Adjust if you strictly need gpt-4o-transcribe
-                file=f
+        logger.info(f"STT Worker processing {request_id} from {audio_url}")
+
+        try:
+            current_state = frappe.cache().get(request_id)
+            state_dict = json.loads(current_state) if current_state else {}
+            state_dict["status"] = "transcribing"
+            frappe.cache().set(request_id, json.dumps(state_dict))
+
+            client = _get_openai_client()
+
+            response = requests.get(audio_url, timeout=20)
+            response.raise_for_status()
+            ext = _get_audio_extension(audio_url, response.headers.get("Content-Type"))
+            input_path = f"/tmp/{uuid.uuid4().hex}.{ext}"
+
+            with open(input_path, "wb") as f:
+                f.write(response.content)
+
+            with open(input_path, "rb") as f:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f
+                )
+
+            text = transcript.text.strip()
+            language = _detect_intent_language(client, text)
+
+            logger.info(f"Transcribed: '{text}' (language: {language})")
+
+            state_dict.update({
+                "status": "transcribed",
+                "transcribed_text": text,
+                "language": language,
+                "stt_timing_ms": int(time.time() * 1000) - stt_started_at_ms,
+            })
+            state_dict.setdefault("metadata", {})
+            state_dict["metadata"].setdefault("timings_ms", {})
+            state_dict["metadata"]["timings_ms"]["stt"] = state_dict["stt_timing_ms"]
+            frappe.cache().set(request_id, json.dumps(state_dict))
+
+            publish_to_queue("text_query_queue", {
+                "request_id": request_id,
+                "query": text,
+                "user_id": user_id,
+                "is_voice": True,
+                "language": language
+            })
+            logger.info(f"{request_id} routed to LLM Worker")
+
+        except Exception as e:
+            err_type = type(e).__name__
+            tb = traceback.format_exc()
+            error_message = f"{err_type}: {repr(e)}"
+            error_context = {
+                "request_id": request_id,
+                "audio_url": audio_url,
+                "user_id": user_id,
+                "http_status": getattr(response, "status_code", None),
+                "content_type": response.headers.get("Content-Type") if response is not None else None,
+            }
+
+            logger.error(f"STT failed for {request_id}: {error_message}")
+            logger.debug(f"STT context: {json.dumps(error_context, default=str)}")
+            logger.debug(f"STT traceback:\n{tb}")
+
+            frappe.log_error(
+                message=(
+                    f"STT Worker failed\n"
+                    f"Error: {error_message}\n"
+                    f"Context: {json.dumps(error_context, default=str)}\n"
+                    f"Traceback:\n{tb}"
+                ),
+                title="tap_ai STT Worker Error",
             )
 
-        text = transcript.text.strip()
-        language = detect_intent_language(client, text)
-        
-        print(f"[>] Transcribed: '{text}' (Language: {language})")
+            if request_id:
+                frappe.cache().set(
+                    request_id,
+                    json.dumps({
+                        "status": "failed",
+                        "error": error_message,
+                        "error_type": err_type,
+                    }),
+                )
+        finally:
+            if input_path and os.path.exists(input_path):
+                os.remove(input_path)
 
-        # Update intermediate state
-        state_dict.update({
-            "status": "transcribed",
-            "transcribed_text": text,
-            "language": language,
-            "stt_timing_ms": int(time.time() * 1000) - stt_started_at_ms,
-        })
-        state_dict.setdefault("metadata", {})
-        state_dict["metadata"].setdefault("timings_ms", {})
-        state_dict["metadata"]["timings_ms"]["stt"] = state_dict["stt_timing_ms"]
-        frappe.cache().set(request_id, json.dumps(state_dict))
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
-        # Forward to LLM Worker
-        publish_to_queue("text_query_queue", {
-            "request_id": request_id,
-            "query": text,
-            "user_id": user_id,
-            "is_voice": True, # Crucial flag so LLM knows to send it to TTS next
-            "language": language
-        })
-        print(f"[ok] {request_id} routed to LLM Worker")
+    def start(self) -> None:
+        """Initialize RabbitMQ connection and begin consuming."""
+        try:
+            parameters = pika.URLParameters(self.rabbitmq_url)
+            connection = pika.BlockingConnection(parameters)
+            channel = connection.channel()
+            channel.queue_declare(queue=self.queue, durable=True)
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue=self.queue, on_message_callback=self.process_message)
+            logger.info(f"STT Worker running on '{self.queue}'. Waiting for messages.")
+            channel.start_consuming()
+        except Exception as e:
+            logger.critical(f"STT Worker crashed: {e}")
 
-    except Exception as e:
-        err_type = type(e).__name__
-        tb = traceback.format_exc()
-        error_message = f"{err_type}: {repr(e)}"
-        error_context = {
-            "request_id": request_id,
-            "audio_url": audio_url,
-            "user_id": user_id,
-            "http_status": getattr(response, "status_code", None),
-            "content_type": response.headers.get("Content-Type") if response is not None else None,
-        }
-
-        print(f"[x] STT failed for {request_id}: {error_message}")
-        print(f"[x] STT context: {json.dumps(error_context, default=str)}")
-        print(f"[x] STT traceback:\n{tb}")
-
-        frappe.log_error(
-            message=(
-                f"STT Worker failed\n"
-                f"Error: {error_message}\n"
-                f"Context: {json.dumps(error_context, default=str)}\n"
-                f"Traceback:\n{tb}"
-            ),
-            title="tap_ai STT Worker Error",
-        )
-
-        if request_id:
-            frappe.cache().set(
-                request_id,
-                json.dumps({
-                    "status": "failed",
-                    "error": error_message,
-                    "error_type": err_type,
-                }),
-            )
-    finally:
-        if input_path and os.path.exists(input_path):
-            os.remove(input_path)
-
-    ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def start():
-    rabbitmq_url = frappe.conf.get("rabbitmq_url") or "amqp://guest:guest@localhost:5672/"
-    try:
-        parameters = pika.URLParameters(rabbitmq_url)
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        channel.queue_declare(queue="audio_stt_queue", durable=True)
-        channel.basic_qos(prefetch_count=1)
-        channel.basic_consume(queue="audio_stt_queue", on_message_callback=process_message)
-        print(" [*] STT Worker running. Waiting for messages...")
-        channel.start_consuming()
-    except Exception as e:
-        print(f"[!] STT Worker crashed: {str(e)}")
+    """Entry point called by the worker runner."""
+    STTWorker().start()

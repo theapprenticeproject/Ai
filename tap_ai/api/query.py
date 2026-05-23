@@ -1,3 +1,23 @@
+"""
+Unified query submission endpoint.
+
+Accepts either a text query (`q`) or a voice audio URL (`audio_url`) and
+dispatches processing to the appropriate RabbitMQ queue:
+
+    text  →  text_query_queue  →  LLMWorker
+    voice →  audio_stt_queue   →  STTWorker → LLMWorker → (optional) TTSWorker
+
+Applies per-user rate limiting (60 req/min text, 30 req/min voice), creates a
+unique `request_id`, and returns it immediately. The caller polls
+`tap_ai.api.result.result` to retrieve the answer.
+
+Endpoint:
+    POST /api/method/tap_ai.api.query.query
+    Body (text):  { "q": "...", "user_id": "..." }
+    Body (voice): { "audio_url": "...", "user_id": "..." }
+    Optional:     "session_id" for multi-turn conversation context
+"""
+
 import frappe
 import json
 import uuid

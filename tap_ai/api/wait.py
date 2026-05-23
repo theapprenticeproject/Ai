@@ -1,5 +1,21 @@
+"""
+Glific workflow delay endpoint.
+
+Provides a simple HTTP-triggered sleep so Glific automation flows can pause
+between steps without building timer logic into the flow itself. The delay
+is synchronous and capped at 5 minutes to prevent runaway holds.
+
+Endpoint:
+    GET  /api/method/tap_ai.api.wait.delay?delay_seconds=10
+    POST /api/method/tap_ai.api.wait.delay  (delay_seconds in body)
+
+Typical Glific usage: call this between the query step and the result step
+to give workers time to process before the client polls for an answer.
+"""
+
 import frappe
 import time
+from loguru import logger
 
 
 # Wait constants
@@ -44,20 +60,18 @@ def delay(delay_seconds: int | None = None):
         caller = getattr(frappe.local, "request_ip", None) or (frappe.local.request.environ.get('REMOTE_ADDR') if getattr(frappe.local, 'request', None) else None)
     except Exception:
         caller = None
-    print(f"> Webhook delay called: caller={caller} delay_seconds={delay_seconds} ts={int(time.time())}")
+    logger.debug(f"Webhook delay called: caller={caller} delay_seconds={delay_seconds}")
 
     waited = 0
     try:
         if delay_seconds > 0:
-            # Use sleep but guard against interruptions — always return a stable JSON
             time.sleep(delay_seconds)
             waited = delay_seconds
     except Exception as e:
-        print(f"> Webhook delay interrupted for caller={caller}: {e}")
-        # continue to return a structured payload
+        logger.warning(f"Webhook delay interrupted for caller={caller}: {e}")
 
     resp = {"success": True, "waited_seconds": waited}
-    print(f"> Webhook delay returning: caller={caller} payload={resp} ts={int(time.time())}")
+    logger.debug(f"Webhook delay returning: caller={caller} waited={waited}s")
     return resp
 
 
