@@ -114,13 +114,15 @@ FAST_KB_PATTERNS = re.compile(
     )
     |
     # Continue / Ready  (context-dependent — only safe after refinement)
+    # Require these to be the ENTIRE query so "yes, teach me X" doesn't mis-route.
     (?:
-        \b(?:yes|ready|continue|chalo|haan|ok)\b
+        \b(?:yes|ready|continue|chalo|haan|ok)\s*[!?.,]*\s*$
     )
     |
     # Very short / unclear  (context-dependent — only safe after refinement)
+    # Require these to be the ENTIRE query so "yep, teach me X" doesn't mis-route.
     (?:
-        \b(?:k|ok|acha|thik\s+hai|hmm|sure|yep|yup)\b
+        \b(?:k|ok|acha|thik\s+hai|hmm|sure|yep|yup)\s*[!?.,]*\s*$
     )
     """,
     re.I | re.X | re.UNICODE,
