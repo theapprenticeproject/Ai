@@ -17,7 +17,7 @@
   "fallback_used",
   "section_kb",
   "matched_kb_entry",
-  "matched_kb_category",
+  "matched_kb_type",
   "section_timing",
   "timing_ms",
   "route_ms",
@@ -112,10 +112,11 @@
    "read_only": 1
   },
   {
-   "fieldname": "matched_kb_category",
-   "fieldtype": "Data",
+   "fieldname": "matched_kb_type",
+   "fieldtype": "Select",
    "in_standard_filter": 1,
-   "label": "KB Category",
+   "label": "KB Type",
+   "options": "\nSystem Prompt\nIntent\nGuideline\nFAQ\nGeneral",
    "read_only": 1
   },
   {
