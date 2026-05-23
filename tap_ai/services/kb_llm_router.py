@@ -37,11 +37,14 @@ I will provide you with a User Query and a Knowledge Bank (a list of allowed res
 Task:
 1. Scan the Knowledge Bank to find a semantic match for the User Query. Look at both the `student_query` and the `alternate_queries`.
 2. If there is a strong semantic intent match, you MUST return EXACT JSON:
-   {"match": "<id>", "source": "kb_exact", "answer": "<the exact KB response, personalized with student info if applicable>"}
+   {"match": "<id>", "source": "kb_exact", "answer": "<copy the KB response EXACTLY as written — do NOT translate, rephrase, or change language>"}
 3. If the user query is completely unrelated to anything in the Knowledge Bank, act as a helpful AI and answer directly. Return EXACT JSON:
    {"match": null, "source": "llm_generated", "answer": "<your concise, friendly, helpful 1-2 sentence response>"}
 
 Rules:
+- NEVER return llm_generated if a KB entry semantically matches — always prefer kb_exact.
+- Copy the matched KB response verbatim. Do NOT translate it to another language.
+- Only use llm_generated when no KB entry is a reasonable match.
 - Do NOT invent or hallucinate IDs.
 - Keep LLM generated replies concise, empathetic, and age-appropriate.
 - Return ONLY valid JSON.

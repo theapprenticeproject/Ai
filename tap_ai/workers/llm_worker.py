@@ -174,6 +174,63 @@ def _finalize_voice_answer(
         logger.info(f"Voice task {request_id} completed as text-only (TTS disabled)")
 
 
+def _derive_answer_source(tool: str, metadata: dict) -> str:
+    if metadata.get("answer_source") == "knowledge_bank_exact":
+        return "knowledge_bank_exact"
+    decision = metadata.get("decision")
+    if decision == "kb_exact":
+        return "kb_llm_selected"
+    if decision == "llm_generated":
+        return "llm_generated"
+    if tool == "text_to_sql":
+        return "sql_fallback_rag" if metadata.get("fallback_used") else "sql"
+    if tool == "vector_search":
+        return "rag"
+    return "llm_generated"
+
+
+def _log_query(
+    request_id: str,
+    user_id: str | None,
+    session_id: str | None,
+    query: str | None,
+    tool: str | None,
+    metadata: dict,
+    language: str = "en",
+    is_voice: bool = False,
+    status: str = "success",
+    error: str | None = None,
+) -> None:
+    """Write one row to AI Query Log for analytics. Never raises."""
+    try:
+        timings = metadata.get("timings_ms") or {}
+        kb_meta = metadata.get("knowledge_bank") or {}
+        answer_source = _derive_answer_source(tool or "", metadata)
+
+        frappe.get_doc({
+            "doctype": "AI Query Log",
+            "request_id": request_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "query_preview": (query or "")[:200],
+            "tool": tool,
+            "answer_source": answer_source,
+            "language": language or "en",
+            "is_voice": "Yes" if is_voice else "No",
+            "timing_ms": timings.get("end_to_end") or timings.get("total"),
+            "route_ms": timings.get("route_ms"),
+            "processing_ms": timings.get("processing") or timings.get("processing_total"),
+            "matched_kb_entry": kb_meta.get("name"),
+            "matched_kb_type": kb_meta.get("knowledge_type"),
+            "fallback_used": 1 if metadata.get("fallback_used") else 0,
+            "status": status,
+            "error": (error or "")[:500] if error else None,
+        }).insert(ignore_permissions=True)
+        frappe.db.commit()
+    except Exception as e:
+        logger.warning(f"AI Query Log write failed for {request_id}: {e}")
+
+
 def _process_vector_search_synthesis(payload: dict) -> None:
     request_id = payload.get("request_id")
     query = payload.get("query")
@@ -251,6 +308,18 @@ def _process_vector_search_synthesis(payload: dict) -> None:
         _save_request_state(request_id, state_dict)
         logger.info(f"Vector search synthesis completed for {request_id}")
 
+    _log_query(
+        request_id=request_id,
+        user_id=user_id,
+        session_id=session_id,
+        query=query,
+        tool="vector_search",
+        metadata=metadata,
+        language=language,
+        is_voice=is_voice,
+        status="success",
+    )
+
 
 class LLMWorker:
     """
@@ -296,6 +365,9 @@ class LLMWorker:
             return
 
         logger.info(f"Picked up task: {request_id} | query: '{query}' | session: {session_id}")
+
+        primary_tool = None
+        resolved_tool = None
 
         try:
             state_dict = _load_request_state(request_id)
@@ -516,9 +588,32 @@ class LLMWorker:
                 "query": query,
                 "user_id": user_id,
             })
+            _log_query(
+                request_id=request_id,
+                user_id=user_id,
+                session_id=session_id,
+                query=query,
+                tool=resolved_tool or primary_tool,
+                metadata={},
+                language=language,
+                is_voice=is_voice,
+                status="failed",
+                error=str(e),
+            )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
 
+        _log_query(
+            request_id=request_id,
+            user_id=user_id,
+            session_id=session_id,
+            query=query,
+            tool=resolved_tool or primary_tool,
+            metadata=state_dict.get("metadata") or {},
+            language=language,
+            is_voice=is_voice,
+            status="success",
+        )
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
     def start(self) -> None:
