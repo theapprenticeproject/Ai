@@ -6,7 +6,6 @@
 ![Pinecone](https://img.shields.io/badge/VectorDB-Pinecone-00B388)
 ![RabbitMQ](https://img.shields.io/badge/Queue-RabbitMQ-FF6600?logo=rabbitmq&logoColor=white)
 ![Redis](https://img.shields.io/badge/Cache-Redis-DC382D?logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-pytest-passing-brightgreen?logo=pytest)
 ![License](https://img.shields.io/badge/license-see%20license.txt-lightgrey)
 
 This project extends the TAP AI Frappe application with a powerful, conversational AI layer. It provides a single, robust API endpoint that can understand user questions and intelligently route them to the best tool - a curated knowledge bank, a direct database query, a semantic vector search, or a direct LLM fallback - to provide accurate, context-aware answers.
