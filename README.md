@@ -1,5 +1,14 @@
 # TAP AI - Conversational AI Engine
 
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Frappe](https://img.shields.io/badge/Framework-Frappe%2015-0089FF)
+![OpenAI](https://img.shields.io/badge/LLM-OpenAI-412991?logo=openai&logoColor=white)
+![Pinecone](https://img.shields.io/badge/VectorDB-Pinecone-00B388)
+![RabbitMQ](https://img.shields.io/badge/Queue-RabbitMQ-FF6600?logo=rabbitmq&logoColor=white)
+![Redis](https://img.shields.io/badge/Cache-Redis-DC382D?logo=redis&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-pytest-passing-brightgreen?logo=pytest)
+![License](https://img.shields.io/badge/license-see%20license.txt-lightgrey)
+
 This project extends the TAP AI Frappe application with a powerful, conversational AI layer. It provides a single, robust API endpoint that can understand user questions and intelligently route them to the best tool - a curated knowledge bank, a direct database query, a semantic vector search, or a direct LLM fallback - to provide accurate, context-aware answers.
 
 The system is designed for multi-turn conversations, automatically managing chat history to understand follow-up questions. It features **asynchronous processing via RabbitMQ workers**, **voice input/output support**, and **dynamic configuration management** for seamless integration with TAP LMS.
@@ -21,7 +30,6 @@ Current deployment topology:
 - [Testing](#-testing)
 - [API Documentation](#-api-documentation)
 - [Worker System](#-worker-system)
-- [Core File Descriptions](#-core-file-descriptions)
 - [Telegram Bot Demo](#-telegram-bot-demo-local-setup)
 - [Deployment Guide](#-deployment-guide)
 - [Troubleshooting](#-troubleshooting)
@@ -51,12 +59,7 @@ Current deployment topology:
 - Dynamic configuration for TAP LMS integration
 - Admin-controlled DocType exclusion system
 
-## 🛠 Recent Updates
-
-- Added a hybrid Knowledge Bank verifier: the system now probes the best KB candidate and asks the LLM to verify whether the candidate appropriately answers the user's query; the LLM either returns the KB response (optionally lightly personalized) or generates a fresh answer. This reduces false positives (e.g., distinguishing "who are you" vs "how are you").
-- Router now uses the hybrid verifier for `knowledge_bank` routed queries.
-- DocType event hooks invalidate the KB cache on insert/update/delete to keep the KB context fresh.
-- A verifier LLM cache is used to reduce latency for repeated verification queries (TTL configurable).
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 **Technology Stack:**
 - **Backend**: Python 3.10+
@@ -499,6 +502,17 @@ curl -X POST "http://localhost:8000/api/method/tap_ai.api.query.query" \
 curl "http://localhost:8000/api/method/tap_ai.api.result.result?request_id=VREQ_x1y2z3w4&wait_seconds=25&poll_interval_ms=500"
 ```
 
+### Automated Tests
+
+```bash
+# Run the full test suite
+cd apps/tap_ai
+pytest -v
+
+# Run a specific module
+pytest tests/test_routing_patterns.py -v
+```
+
 ### Start RabbitMQ Workers
 
 In separate terminal windows:
@@ -675,141 +689,6 @@ bench execute tap_ai.workers.stt_worker.start
 ```bash
 bench execute tap_ai.workers.tts_worker.start
 ```
-
----
-
-## 🔍 Core File Descriptions
-
-### API Layer
-
-**`tap_ai/api/query.py`**
-- Unified text + voice query entry point
-- Rate limiting check
-- Publishes to RabbitMQ `text_query_queue` (text) or `audio_stt_queue` (voice)
-- Returns request_id for polling
-
-**`tap_ai/api/result.py`**
-- Unified result endpoint for text and voice
-- Supports short server-side waiting to reduce coarse flow wait-node dependence
-- Retrieves from Redis cache
-
-**`tap_ai/api/voice_query.py`**
-- Backward-compatible wrapper for unified query endpoint
-
-**`tap_ai/api/voice_result.py`**
-- Backward-compatible wrapper for unified result endpoint
-
-### Services Layer
-
-**`tap_ai/services/router.py`**
-- Central query routing logic
-- Chooses between SQL and RAG engines
-- Manages fallback logic
-- Handles chat history
-
-**`tap_ai/services/sql_answerer.py`**
-- Generates SQL from natural language
-- Builds intelligent schema for LLM
-- Executes queries against remote PostgreSQL
-- Returns structured data
-
-**`tap_ai/services/rag_answerer.py`**
-- Retrieves semantically similar documents
-- Refines queries with chat history
-- Synthesizes answers from context
-- Handles multi-turn conversations
-
-**`tap_ai/services/doctype_selector.py`**
-- Selects relevant DocTypes for RAG
-- Reduces search space
-- Improves retrieval accuracy
-
-**`tap_ai/services/pinecone_store.py`**
-- Manages Pinecone interactions
-- Upserts documents with embeddings
-- Performs semantic search
-
-**`tap_ai/services/direct_response_bank.py`**
-- Loads and caches Knowledge Bank entries from the `TAP Response Knowledge` DocType
-- Exact-match lookup with normalization (fast path, no LLM)
-- Fuzzy scoring and alias expansion for candidate matching
-- Cache invalidation triggered by DocType save/delete hooks
-
-**`tap_ai/services/kb_llm_router.py`**
-- LLM fallback for KB queries that fail exact-match lookup
-- Passes full KB context to a single LLM call for semantic matching
-- Falls back to a direct LLM-generated answer when no KB entry fits
-- Response-level Redis cache (15-minute TTL)
-
-**`tap_ai/services/routing_patterns.py`**
-- Regex fast-path patterns for zero-LLM routing (KB and SQL intents)
-- `KB_CONTENT_WORDS` guard constant used by the worker to prevent KB mis-routing
-- Reduces latency and API cost for common query shapes
-
-**`tap_ai/services/prompt_bank.py`**
-- Loads `Prompt Suggestion` DocType entries (with disk-file fallback)
-- Renders system prompts with student/content variable substitution
-- Used to inject a per-context persona into KB and direct-LLM responses
-
-**`tap_ai/services/ratelimit.py`**
-- Enforces API rate limits
-- Uses Redis for distributed counting
-- Tracks requests per user
-
-### Workers
-
-**`tap_ai/workers/llm_worker.py`**
-- Main processing worker
-- Routes queries through the dual-engine system
-- Manages conversation context
-- Bridges text and voice pipelines
-
-**`tap_ai/workers/stt_worker.py`**
-- Speech-to-Text processing
-- Audio download and handling
-- Language detection
-- Whisper API integration
-
-**`tap_ai/workers/tts_worker.py`**
-- Text-to-Speech synthesis
-- OpenAI TTS integration
-- Frappe File Manager integration
-- Audio file management
-
-### Utilities
-
-**`tap_ai/utils/dynamic_config.py`**
-- Decouples TAP AI from TAP LMS schema changes
-- Handles dynamic DocType mapping
-- Manages user profiles with enrollment data
-- Singleton pattern for configuration caching
-- Validation and context resolution rules
-
-**`tap_ai/utils/mq.py`**
-- RabbitMQ publisher
-- Queue declaration and management
-- Persistent message delivery
-
-### Infrastructure
-
-**`tap_ai/infra/config.py`**
-- Centralized configuration loader
-- Frappe integration with fallbacks
-- Works both inside Frappe and standalone
-- Service status validation
-
-**`tap_ai/infra/llm_client.py`**
-- Singleton `LLMClient` managing `ChatOpenAI` instances per model/temperature/token config
-- `llm_invoke_cached`: Redis-backed response cache (SHA-256 keyed, configurable TTL)
-- Shared by `router.py`, `sql_answerer.py`, `rag_answerer.py`, and `kb_llm_router.py`
-
-### Schema Generation
-
-**`tap_ai/schema/generate_schema.py`**
-- Dynamically discovers all Frappe DocTypes
-- Builds intelligent schema for SQL queries
-- Supports admin-controlled exclusions
-- Auto-detects joins and relationships
 
 ---
 
