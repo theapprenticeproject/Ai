@@ -6,8 +6,7 @@ import json
 import re
 import time
 import unicodedata
-from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import frappe
 from loguru import logger
@@ -16,14 +15,6 @@ from loguru import logger
 KB_DOCTYPE = "TAP Response Knowledge"
 KB_CACHE_KEY = "tap_ai:direct_response_knowledge:v1"
 KB_CACHE_TTL = 3600
-# Default thresholds — override via site_config.json:
-#   "kb_base_threshold": 0.82
-#   "kb_short_query_threshold": 0.88
-#   "kb_medium_query_threshold": 0.84
-KB_BASE_THRESHOLD = 0.82
-KB_SHORT_QUERY_THRESHOLD = 0.88
-KB_MEDIUM_QUERY_THRESHOLD = 0.84
-KB_AMBIGUITY_GAP = 0.05
 
 
 def normalize_text(value: Optional[str]) -> str:
@@ -109,95 +100,6 @@ def _entry_candidates(entry: Dict[str, Any]) -> List[str]:
 	return candidates
 
 
-def _token_overlap(left: str, right: str) -> float:
-	left_tokens = set(left.split())
-	right_tokens = set(right.split())
-	if not left_tokens or not right_tokens:
-		return 0.0
-	return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
-
-
-def _raw_similarity(left: str, right: str) -> float:
-	if not left or not right:
-		return 0.0
-	if left == right:
-		return 1.0
-	return SequenceMatcher(None, left, right).ratio()
-
-
-def _score_candidate(query: str, candidate: str) -> float:
-	query_raw = str(query or "").strip().lower()
-	candidate_raw = str(candidate or "").strip().lower()
-	if not query_raw or not candidate_raw:
-		return 0.0
-	if query_raw == candidate_raw:
-		return 1.0
-
-	query_norm = normalize_text(query_raw)
-	candidate_norm = normalize_text(candidate_raw)
-	if query_norm and query_norm == candidate_norm:
-		return 0.98
-
-	raw_score = _raw_similarity(query_raw, candidate_raw)
-	norm_score = _raw_similarity(query_norm, candidate_norm)
-	token_score = _token_overlap(query_norm, candidate_norm)
-	length_penalty = min(abs(len(query_norm) - len(candidate_norm)) / 120.0, 0.2)
-	base_score = max(raw_score, norm_score)
-	if candidate_norm and (candidate_norm in query_norm or query_norm in candidate_norm):
-		base_score = max(base_score, 0.9)
-	if query_norm.startswith(candidate_norm) or candidate_norm.startswith(query_norm):
-		base_score = max(base_score, 0.93)
-	if base_score >= 0.85:
-		return max(0.0, min(1.0, base_score - length_penalty))
-	score = (base_score * 0.7) + (token_score * 0.25) + (min(raw_score, norm_score) * 0.05)
-	return max(0.0, min(1.0, score - length_penalty))
-
-
-def _minimum_score(query: str) -> float:
-	base = float(frappe.conf.get("kb_base_threshold") or KB_BASE_THRESHOLD)
-	short = float(frappe.conf.get("kb_short_query_threshold") or KB_SHORT_QUERY_THRESHOLD)
-	medium = float(frappe.conf.get("kb_medium_query_threshold") or KB_MEDIUM_QUERY_THRESHOLD)
-	query_norm = normalize_text(query)
-	query_tokens = len(query_norm.split()) if query_norm else 0
-	if query_tokens <= 2:
-		return short
-	if query_tokens <= 4:
-		return medium
-	return base
-
-
-def select_best_response(query: str, entries: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-	"""Pick the best matching response entry from an in-memory list."""
-	best: Optional[Tuple[float, Dict[str, Any], str]] = None
-	second_best_score = 0.0
-	threshold = _minimum_score(query)
-
-	for entry in entries:
-		if not entry or not entry.get("is_active", 1):
-			continue
-
-		for candidate in _entry_candidates(entry):
-			score = _score_candidate(query, candidate)
-			if score < threshold:
-				continue
-			if best is None or score > best[0]:
-				if best is not None:
-					second_best_score = max(second_best_score, best[0])
-				best = (score, entry, candidate)
-			else:
-				second_best_score = max(second_best_score, score)
-
-	if not best:
-		return None
-
-	if best[0] < threshold:
-		return None
-
-	score, entry, matched_query = best
-	result = dict(entry)
-	result["matched_query"] = matched_query
-	result["match_score"] = round(score, 3)
-	return result
 
 
 def _load_entries_from_cache() -> Optional[List[Dict[str, Any]]]:
