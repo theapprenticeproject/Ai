@@ -14,6 +14,7 @@ from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any, Optional
 import frappe
+from loguru import logger
 
 _POOL = None
 _POOL_PID = None
@@ -56,12 +57,15 @@ def _get_connection_config() -> Dict[str, Any]:
     if not all([host, port, db_name, user, password]):
         raise ValueError("Missing remote database configuration")
 
+    query_timeout_ms = int(frappe.conf.get("remote_db_query_timeout_ms", 30000) or 30000)
     return {
         "host": host,
         "port": port,
         "dbname": db_name,
         "user": user,
         "password": password,
+        "connect_timeout": 10,
+        "options": f"-c statement_timeout={query_timeout_ms}",
     }
 
 
@@ -101,12 +105,13 @@ def _get_pool() -> pool.ThreadedConnectionPool:
                 try:
                     _POOL = _create_pool()
                     _POOL_PID = pid
-                    print("[tap_ai] Remote database connection pool established")
+                    logger.info("Remote database connection pool established")
                 except Exception as e:
                     try:
                         frappe.log_error(f"Remote database pool creation failed: {e}")
                     except AttributeError:
-                        print(f"Remote database pool creation failed: {e}")
+                        pass
+                    logger.error(f"Remote database pool creation failed: {e}")
                     raise
 
     return _POOL
@@ -145,11 +150,11 @@ def execute_remote_query(sql: str, params: Optional[tuple] = None) -> List[Dict[
         return [dict(row) for row in results]
 
     except Exception as e:
-        # Handle case where frappe.log_error might not be available
+        logger.error(f"Remote query execution failed: {e} | SQL: {sql}")
         try:
             frappe.log_error(f"Remote query execution failed: {e}\nSQL: {sql}")
         except AttributeError:
-            print(f"Remote query execution failed: {e}\nSQL: {sql}")
+            pass
         raise Exception(f"Remote database query failed: {str(e)}")
     finally:
         if db_pool is not None and conn is not None:
@@ -226,11 +231,11 @@ def get_remote_table_columns(table: str) -> List[str]:
         results = execute_remote_query(sql, (f"tab{table}",))
         return [row["column_name"] for row in results]
     except Exception as e:
-        # Handle case where frappe.log_error might not be available
+        logger.error(f"Failed to get columns for table {table}: {e}")
         try:
             frappe.log_error(f"Failed to get columns for table {table}: {e}")
         except AttributeError:
-            print(f"Failed to get columns for table {table}: {e}")
+            pass
         return []
 
 

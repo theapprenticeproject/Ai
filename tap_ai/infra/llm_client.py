@@ -11,6 +11,7 @@ from typing import List, Optional
 
 import frappe
 from langchain_openai import ChatOpenAI
+from loguru import logger
 
 from tap_ai.infra.config import get_config
 
@@ -34,11 +35,14 @@ class LLMClient:
             if not api_key:
                 raise ValueError("OpenAI API key not configured")
 
+            timeout = int(get_config("llm_request_timeout_s") or 60)
             cls._instances[cache_key] = ChatOpenAI(
                 model_name=model,
                 openai_api_key=api_key,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=2,
             )
 
         return cls._instances[cache_key]
@@ -82,5 +86,5 @@ def llm_invoke_cached(
     except Exception:
         pass
 
-    print(f"> LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
+    logger.debug(f"LLM invoke ({model}) took {int((time.time() - start) * 1000)}ms")
     return content

@@ -13,9 +13,11 @@ Rich metadata
 import json
 import time
 import uuid
+import threading
 from typing import Dict, Any, List, Optional
 
 import frappe
+from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
@@ -71,11 +73,7 @@ def choose_tool(query: str, user_context: Optional[str] = None) -> str:
     prompt += "\n\nWhich tool should be used?"
 
     try:
-        # Debug: log a short snippet of the prompt so we can reproduce routing decisions
-        try:
-            print(f"> Router prompt snippet: {prompt[:400]!r}")
-        except Exception:
-            pass
+        logger.debug(f"Router prompt snippet: {prompt[:400]!r}")
 
         messages = [("system", ROUTER_PROMPT), ("user", prompt)]
 
@@ -84,21 +82,16 @@ def choose_tool(query: str, user_context: Optional[str] = None) -> str:
             model=get_config("primary_llm_model") or "gpt-4o-mini",
             temperature=0.0,
         )
-        # Debug: emit the raw LLM output so we can see why a tool was chosen in logs
-        try:
-            print(f"> Router LLM output: {str(content)[:1000]!r}")
-        except Exception:
-            pass
+        logger.debug(f"Router LLM output: {str(content)[:1000]!r}")
         content = content.replace("```json", "").replace("```", "").strip()
         data = json.loads(content)
         tool = data.get("tool")
-        print(f"> Router Reason: {data.get('reason')}")
         if tool in ("knowledge_bank", "text_to_sql", "vector_search"):
             return tool
     except Exception as e:
         frappe.log_error(f"Router failed: {e}")
 
-    print("> Router fallback -> vector_search")
+    logger.warning("Router fallback -> vector_search")
     return "vector_search"
 
 
@@ -218,7 +211,7 @@ def process_query(
         routing_start = time.perf_counter()
         primary_tool = choose_tool(refined_query, user_context)
         routing_ms = int((time.perf_counter() - routing_start) * 1000)
-        print(f"> Selected Primary Tool: {primary_tool}")
+        logger.info(f"Selected primary tool: {primary_tool}")
 
     fallback_used = False
     result = {}
@@ -292,7 +285,7 @@ def process_query(
         )
 
         if _is_failure(result):
-            print("> SQL failure detected → Falling back to RAG")
+            logger.warning("SQL failure detected — falling back to RAG")
             fallback_used = True
             interim = "Searching, please wait a few more seconds..."
             result = answer_from_pinecone(
@@ -327,6 +320,7 @@ def process_query(
 
 CHAT_HISTORY_TABLE = get_config("chat_history_db_table") or "tabAIChatHistory"
 _CHAT_HISTORY_TABLE_ENSURED = False
+_CHAT_HISTORY_TABLE_LOCK = threading.Lock()
 
 
 def _cache_key(user_id: str, session_id: Optional[str] = None) -> str:
@@ -342,24 +336,27 @@ def _ensure_chat_history_table_exists():
     if _CHAT_HISTORY_TABLE_ENSURED:
         return
 
-    try:
-        frappe.db.sql(
-            f"""
-            CREATE TABLE IF NOT EXISTS `{CHAT_HISTORY_TABLE}` (
-                name VARCHAR(255) PRIMARY KEY,
-                user_id VARCHAR(255) NOT NULL,
-                session_id VARCHAR(255),
-                role VARCHAR(50) NOT NULL,
-                content TEXT NOT NULL,
-                metadata TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    with _CHAT_HISTORY_TABLE_LOCK:
+        if _CHAT_HISTORY_TABLE_ENSURED:
+            return
+        try:
+            frappe.db.sql(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{CHAT_HISTORY_TABLE}` (
+                    name VARCHAR(255) PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL,
+                    session_id VARCHAR(255),
+                    role VARCHAR(50) NOT NULL,
+                    content TEXT NOT NULL,
+                    metadata TEXT,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-        frappe.db.commit()
-        _CHAT_HISTORY_TABLE_ENSURED = True
-    except Exception as e:
-        frappe.log_error(f"Chat history table creation failed: {e}", "tap_ai.services.router")
+            frappe.db.commit()
+            _CHAT_HISTORY_TABLE_ENSURED = True
+        except Exception as e:
+            frappe.log_error(f"Chat history table creation failed: {e}", "tap_ai.services.router")
 
 
 def _get_history_from_db(
@@ -388,7 +385,7 @@ def _get_history_from_db(
 
         return [{"role": row.role, "content": row.content} for row in reversed(rows)]
     except Exception as e:
-        print(f"> DB history load failed: {e}")
+        logger.warning(f"DB history load failed: {e}")
         return []
 
 
@@ -456,7 +453,7 @@ def _get_history_from_cache(
         # Fallback: hydrate live cache from durable DB history
         return _get_history_from_db(user_id, session_id=session_id, limit=10)
     except Exception as e:
-        print(f"> History load failed: {e}")
+        logger.warning(f"History load failed: {e}")
         return []
 
 
@@ -484,7 +481,7 @@ def _save_history_to_cache(
         merged = (existing + messages)[-10:]
         cache.set(key, json.dumps(merged))
     except Exception as e:
-        print(f"> History save failed: {e}")
+        logger.warning(f"History save failed: {e}")
 
 
 def get_session_transcript(
@@ -569,9 +566,7 @@ def cli(q: str, user_id: str = "default_user"):
     
     """
 
-    print("\n" + "=" * 80)
-    print("TAP AI ROUTER â€“ CLI")
-    print("=" * 80)
+    logger.info(“TAP AI ROUTER - CLI”)
 
     history = _get_history_from_cache(user_id)
 

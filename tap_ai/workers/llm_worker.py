@@ -4,6 +4,7 @@ import frappe
 import json
 import pika
 import time
+from loguru import logger
 from tap_ai.services.router import (
     process_query,
     choose_tool,
@@ -35,9 +36,9 @@ def _load_request_state(request_id: str) -> dict:
 def _save_request_state(request_id: str, state_dict: dict) -> None:
     try:
         frappe.cache().set(request_id, json.dumps(state_dict))
-        print(f"[LLM Worker] cache.set: request_id={request_id} status={state_dict.get('status')} tool={state_dict.get('tool')} router_decision={state_dict.get('router_decision')} ts={int(time.time())}")
+        logger.debug(f"cache.set: request_id={request_id} status={state_dict.get('status')} tool={state_dict.get('tool')}")
     except Exception as e:
-        print(f"[LLM Worker] cache.set failed for {request_id}: {e}")
+        logger.warning(f"cache.set failed for {request_id}: {e}")
 
 
 def _resolve_result_tool(result: dict, fallback_tool: str) -> str:
@@ -131,7 +132,7 @@ def _finalize_voice_answer(
             "language": language,
             "transcribed_text": query,
         })
-        print(f"[>] Voice detected: Routed {request_id} to audio_tts_queue")
+        logger.info(f"Voice detected: routed {request_id} to audio_tts_queue")
     else:
         state_dict.update({
             "status": "success",
@@ -149,7 +150,7 @@ def _finalize_voice_answer(
         state_dict.setdefault("metadata", {})
         state_dict["metadata"]["tts_skipped"] = True
         _save_request_state(request_id, state_dict)
-        print(f"[ok] Voice task {request_id} completed as text-only (TTS disabled).")
+        logger.info(f"Voice task {request_id} completed as text-only (TTS disabled)")
 
 
 def _process_vector_search_synthesis(payload: dict) -> None:
@@ -161,7 +162,7 @@ def _process_vector_search_synthesis(payload: dict) -> None:
     is_voice = payload.get("is_voice", False)
     context_text = payload.get("context_text") or ""
 
-    print(f"\n[*] [LLM Worker] Synthesizing vector-search answer for: {request_id}")
+    logger.info(f"Synthesizing vector-search answer for: {request_id}")
 
     state_dict = _load_request_state(request_id)
     # Preserve vector_search_success status; only track that synthesis is in progress
@@ -229,7 +230,7 @@ def _process_vector_search_synthesis(payload: dict) -> None:
             "metadata": metadata,
         })
         _save_request_state(request_id, state_dict)
-        print(f"[ok] Vector search synthesis completed for {request_id}.")
+        logger.info(f"Vector search synthesis completed for {request_id}")
 
 def process_message(ch, method, properties, body):
     """Callback triggered when a message is pulled from text_query_queue."""
@@ -246,8 +247,9 @@ def process_message(ch, method, properties, body):
     if payload.get("stage") == "vector_search_synthesis":
         try:
             _process_vector_search_synthesis(payload)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception as e:
-            print(f"[x] Vector search synthesis failed for {request_id}: {str(e)}")
+            logger.error(f"Vector search synthesis failed for {request_id}: {e}")
             frappe.log_error(f"Vector search synthesis error: {str(e)}", "RabbitMQ Worker")
             _save_request_state(request_id, {
                 "status": "failed",
@@ -256,11 +258,10 @@ def process_message(ch, method, properties, body):
                 "user_id": user_id,
                 "session_id": session_id,
             })
-
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    print(f"\n[*] [LLM Worker] Picked up task: {request_id} | Query: '{query}' | Session: {session_id}")
+    logger.info(f"Picked up task: {request_id} | query: '{query}' | session: {session_id}")
 
     try:
         # 1. Mark as in-progress for real-time UI feedback
@@ -310,7 +311,7 @@ def process_message(ch, method, properties, body):
 
         # KB guard: content/navigation queries don't belong in knowledge_bank
         if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
-            print(f"> KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
+            logger.debug(f"KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
             primary_tool = "vector_search"
 
         # 5. Update state with routing decision and timings
@@ -381,7 +382,7 @@ def process_message(ch, method, properties, body):
                 context_text=vector_search_bundle.get("context_text") or "",
                 is_voice=is_voice,
             )
-            print(f"[>] Vector search completed for {request_id}; synthesis queued.")
+            logger.info(f"Vector search completed for {request_id}; synthesis queued")
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
@@ -447,7 +448,7 @@ def process_message(ch, method, properties, body):
                     "language": language,
                     "transcribed_text": query
                 })
-                print(f"[>] Voice detected: Routed {request_id} to audio_tts_queue")
+                logger.info(f"Voice detected: routed {request_id} to audio_tts_queue")
             else:
                 # Text-only fast path for voice mode: finalize immediately.
                 metadata = _apply_end_to_end_timing(state_dict, metadata)
@@ -473,7 +474,7 @@ def process_message(ch, method, properties, body):
                 state_dict.setdefault("metadata", {})
                 state_dict["metadata"]["tts_skipped"] = True
                 _save_request_state(request_id, state_dict)
-                print(f"[ok] Voice task {request_id} completed as text-only (TTS disabled).")
+                logger.info(f"Voice task {request_id} completed as text-only (TTS disabled)")
 
         else:
             # Standard Text Query - Finish and save to Redis
@@ -495,20 +496,20 @@ def process_message(ch, method, properties, body):
                 "timing_ms": metadata.get("timings_ms", {}).get("total"),
             })
             _save_request_state(request_id, state_dict)
-            print(f"[ok] Task {request_id} completed successfully.")
+            logger.info(f"Task {request_id} completed successfully")
 
     except Exception as e:
-        print(f"[x] Task {request_id} failed: {str(e)}")
+        logger.error(f"Task {request_id} failed: {e}")
         frappe.log_error(f"LLM Worker Error: {str(e)}", "RabbitMQ Worker")
-        
         _save_request_state(request_id, {
             "status": "failed",
             "error": str(e),
             "query": query,
             "user_id": user_id,
         })
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        return
 
-    # 6. Acknowledge the message (Removes it from RabbitMQ)
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
@@ -525,8 +526,8 @@ def start():
         channel.basic_qos(prefetch_count=1) # Process one message at a time
         channel.basic_consume(queue="text_query_queue", on_message_callback=process_message)
 
-        print(" [*] LLM Worker running. Waiting for messages. (CTRL+C to exit)")
+        logger.info("LLM Worker running. Waiting for messages. (CTRL+C to exit)")
         channel.start_consuming()
 
     except Exception as e:
-        print(f"[!] Worker crashed: {str(e)}")
+        logger.critical(f"Worker crashed: {e}")
