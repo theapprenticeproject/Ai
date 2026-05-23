@@ -10,11 +10,19 @@ import time
 from typing import Dict, Any, List, Optional
 
 import frappe
+from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.infra.sql_catalog import load_schema
 from tap_ai.services.prompt_bank import get_system_message_for_context
+
+
+def _sanitize_prompt_value(value: Any) -> str:
+    """Strip newlines and control characters from user-profile values before prompt injection."""
+    if not value:
+        return ""
+    return re.sub(r"[\r\n\t\x00-\x1f]", " ", str(value).strip())[:100]
 
 
 # --- Schema Building ---
@@ -41,24 +49,32 @@ def _build_enriched_schema_prompt(user_profile: Optional[Dict] = None) -> str:
     except Exception:
         prompt_parts = ["DATABASE SCHEMA:\n"]
     
+    col_limit = int(get_config("schema_max_columns") or 20)
+    join_limit = int(get_config("schema_max_joins") or 20)
+
     # Add tables
     for table_name, table_info in tables.items():
         doctype = table_info.get("doctype")
         columns = table_info.get("columns", [])
         description = table_info.get("description", "")
-        
+
+        if len(columns) > col_limit:
+            logger.warning(f"Schema truncated: {table_name} has {len(columns)} columns, showing {col_limit}")
+
         prompt_parts.append(f"\nTable: {table_name} (DocType: {doctype})")
         prompt_parts.append(f"Description: {description}")
-        prompt_parts.append(f"Columns: {', '.join(columns[:20])}")  # Limit for brevity
-        
+        prompt_parts.append(f"Columns: {', '.join(columns[:col_limit])}")
+
         # Add display field if available
         if table_info.get("display_field"):
             prompt_parts.append(f"Display Field: {table_info['display_field']}")
-    
+
     # Add allowed joins
     if allowed_joins:
+        if len(allowed_joins) > join_limit:
+            logger.warning(f"Schema truncated: {len(allowed_joins)} joins, showing {join_limit}")
         prompt_parts.append("\n\nALLOWED JOINS:")
-        for join in allowed_joins[:20]:  # Limit for brevity
+        for join in allowed_joins[:join_limit]:
             prompt_parts.append(
                 f"- {join['left_table']}.{join['left_key']} → "
                 f"{join['right_table']}.{join['right_key']}"
@@ -73,20 +89,23 @@ def _build_enriched_schema_prompt(user_profile: Optional[Dict] = None) -> str:
         # Add user context hints if available
     if user_profile:
         if user_profile.get('type'):
-            prompt_parts.append(f"- User Type: {user_profile['type']}")
-        
+            prompt_parts.append(f"- User Type: {_sanitize_prompt_value(user_profile['type'])}")
+
         if user_profile.get('grade'):
-            prompt_parts.append(f"- Grade: {user_profile['grade']}")
-            prompt_parts.append(f"  IMPORTANT: Filter results by grade = '{user_profile['grade']}' when querying student content")
-        
+            grade = _sanitize_prompt_value(user_profile['grade'])
+            prompt_parts.append(f"- Grade: {grade}")
+            prompt_parts.append(f"  IMPORTANT: Filter results by grade = '{grade}' when querying student content")
+
         if user_profile.get('batch'):
-            prompt_parts.append(f"- Batch: {user_profile['batch']}")
+            batch = _sanitize_prompt_value(user_profile['batch'])
+            prompt_parts.append(f"- Batch: {batch}")
             prompt_parts.append(f"  Consider filtering by batch when relevant")
-        
+
         if user_profile.get('current_enrollment'):
             enrollment = user_profile['current_enrollment']
             if enrollment.get('course'):
-                prompt_parts.append(f"- Current Course: {enrollment['course']}")
+                course = _sanitize_prompt_value(enrollment['course'])
+                prompt_parts.append(f"- Current Course: {course}")
                 prompt_parts.append(f"  Prioritize content from this course")
     else:
         prompt_parts.append("\n\nUSER CONTEXT:")
@@ -164,17 +183,19 @@ def _generate_sql_query(
         user_prompt_parts.append(f"\nCONVERSATION HISTORY:\n{history_text}")  
         user_prompt_parts.append("\nConsider the conversation context when generating the SQL query.")  
       
-    # Add specific instructions for user context  
-    if user_profile:  
-        if user_profile.get('grade'):  
-            user_prompt_parts.append(  
-                f"\nIMPORTANT: User is in Grade {user_profile['grade']}. "  
-                f"Filter by grade = '{user_profile['grade']}' when querying student content like videos, quizzes, assignments."  
-            )  
-          
-        if user_profile.get('batch'):  
-            user_prompt_parts.append(  
-                f"User's batch is {user_profile['batch']}. Consider filtering by batch when relevant."  
+    # Add specific instructions for user context
+    if user_profile:
+        if user_profile.get('grade'):
+            grade = _sanitize_prompt_value(user_profile['grade'])
+            user_prompt_parts.append(
+                f"\nIMPORTANT: User is in Grade {grade}. "
+                f"Filter by grade = '{grade}' when querying student content like videos, quizzes, assignments."
+            )
+
+        if user_profile.get('batch'):
+            batch = _sanitize_prompt_value(user_profile['batch'])
+            user_prompt_parts.append(
+                f"User's batch is {batch}. Consider filtering by batch when relevant."
             )  
     else:  
         user_prompt_parts.append(  
@@ -207,7 +228,7 @@ def _generate_sql_query(
         if "LIMIT" not in sql.upper():
             sql += " LIMIT 20"  
           
-        print(f"> Generated SQL: {sql[:200]}...")  
+        logger.debug(f"Generated SQL: {sql[:200]}...")
         return sql  
           
     except Exception as e:  
@@ -230,7 +251,7 @@ def _execute_sql(sql: str) -> List[Dict[str, Any]]:
         # Use remote database instead of local frappe.db
         from tap_ai.utils.remote_db import execute_remote_query
         results = execute_remote_query(sql)
-        print(f"> SQL returned {len(results)} rows")
+        logger.debug(f"SQL returned {len(results)} rows")
         return results
 
     except Exception as e:
@@ -364,39 +385,23 @@ def answer_from_sql(
     """
     start_time = time.time()
     
-    print("> Starting Text-to-SQL process...")
+    logger.info("Starting Text-to-SQL process")
     if user_profile:
-        user_name = user_profile.get('name', 'Unknown')
-        user_grade = user_profile.get('grade', 'N/A')
-        user_batch = user_profile.get('batch', 'N/A')
-        print(f"> User Context: {user_name} | Grade {user_grade} | Batch {user_batch}")
-    else:
-        print("> No user context - generating general SQL query")
-    
+        logger.debug(f"User context: {user_profile.get('name')} | grade={user_profile.get('grade')} | batch={user_profile.get('batch')}")
+
     try:
-        # Step 1: Build enriched schema prompt
-        print("> Building schema prompt...")
         schema_prompt = _build_enriched_schema_prompt(user_profile)
-        
-        # Step 2: Generate SQL query - now pass chat_history  
-        print("> Generating SQL query...")  
-        sql_query = _generate_sql_query(query, schema_prompt, user_profile, chat_history)  
-        
-        # Step 3: Execute SQL
-        print("> Executing SQL query...")
+        sql_query = _generate_sql_query(query, schema_prompt, user_profile, chat_history)
         results = _execute_sql(sql_query)
-        
-        # Step 4: Synthesize natural language answer
-        print("> Synthesizing answer...")
         answer = _synthesize_answer_from_results(
             query=query,
             sql=sql_query,
             results=results,
             user_profile=user_profile
         )
-        
+
         elapsed = round(time.time() - start_time, 2)
-        print(f"> Text-to-SQL process completed in {elapsed}s")
+        logger.info(f"Text-to-SQL completed in {elapsed}s")
         
         return {
             "question": query,

@@ -8,8 +8,8 @@ Properly handles Student enrollment child table
 import frappe
 import json
 import time
+from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
-import json
 from tap_ai.services.router import process_query  # Import the actual AI processor function to use in the API endpoint
 
 class DynamicConfig:
@@ -224,10 +224,16 @@ class DynamicConfig:
             enrollments.append(enrollment_data)
         
         # Sort by date_joining, most recent first (current enrollment first)
-        enrollments.sort(
-            key=lambda x: x.get('date_joining') or '1900-01-01',
-            reverse=True
-        )
+        def _parse_date(x):
+            raw = x.get('date_joining')
+            if not raw:
+                return datetime.min
+            try:
+                return datetime.fromisoformat(str(raw))
+            except (ValueError, TypeError):
+                return datetime.min
+
+        enrollments.sort(key=_parse_date, reverse=True)
         
         return enrollments
     

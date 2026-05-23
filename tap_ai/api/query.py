@@ -2,6 +2,7 @@ import frappe
 import json
 import uuid
 import time
+from loguru import logger
 from tap_ai.services.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue, MQUnavailableError, MQPublishError
 
@@ -54,7 +55,7 @@ def query():
         audio_url = (data.get("audio_url") or "").strip()
         user_id = _resolve_user_id(data)
         session_id = data.get("session_id")
-        print(f"[Query API] Entry: q={q!r}, user_id={user_id}")
+        logger.info(f"Query API entry: q={q!r} user_id={user_id}")
 
         if not q and not audio_url:
             frappe.throw("Provide one input in POST body: q (text) or audio_url (voice).")
@@ -74,7 +75,7 @@ def query():
             limit=limit,
             window_sec=60
         )
-        print(f"[Query API] Rate limit check: ok={ok}, remaining={remaining}")
+        logger.debug(f"Rate limit check: ok={ok} remaining={remaining}")
         if not ok:
             if is_voice:
                 message = f"Voice query rate limit exceeded. Try again in {reset} seconds."
@@ -106,13 +107,11 @@ def query():
                 "history": [],
             })
 
-        # Keep a bounded TTL for both request types.
-        print(f"[Query API] Cache set OK: request_id={request_id}")
         try:
             frappe.cache().set(request_id, json.dumps(state), ex=3600)
-            print(f"[Query API] cache.set written: request_id={request_id} mode={state.get('mode')} ts={int(time.time())}")
+            logger.debug(f"Cache set: request_id={request_id} mode={state.get('mode')}")
         except Exception as e:
-            print(f"[Query API] cache.set failed for {request_id}: {e}")
+            logger.warning(f"Cache set failed for {request_id}: {e}")
 
         if is_voice:
             payload = {
@@ -133,25 +132,23 @@ def query():
                 payload["session_id"] = session_id
             publish_to_queue("text_query_queue", payload)
 
-        print(f"[Query API] Published to queue: request_id={request_id}")
+        logger.info(f"Published to queue: request_id={request_id}")
         return {"request_id": request_id, "status": "queued"}
 
-    except frappe.TooManyRequestsError as e:
-        print(f"[Query API] Rate limit error raised")
+    except frappe.TooManyRequestsError:
         raise
     except MQUnavailableError as e:
-        print(f"[Query API] MQ unavailable: {e}")
+        logger.error(f"MQ unavailable: {e}")
         frappe.local.response["http_status_code"] = 503
         frappe.throw(str(e))
     except MQPublishError as e:
-        print(f"[Query API] MQ publish error: {e}")
+        logger.error(f"MQ publish error: {e}")
         frappe.local.response["http_status_code"] = 500
         frappe.throw(str(e))
     except frappe.ValidationError:
         raise
     except Exception as e:
-        # Unexpected errors should not return a success-shaped payload.
-        print(f"[Query API] Exception caught: {e}")
+        logger.error(f"Unhandled exception in Query API: {e}")
         try:
             frappe.log_error(str(e), "Query API Error")
         except Exception:
