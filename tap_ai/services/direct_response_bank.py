@@ -136,7 +136,6 @@ def get_direct_response_entries(force_refresh: bool = False) -> List[Dict[str, A
 			fields=[
 				"name",
 				"title",
-				"knowledge_type",
 				"student_query",
 				"normalized_query",
 				"alternate_queries",
@@ -260,7 +259,6 @@ def lookup_exact_direct_response(
 						"doctype": KB_DOCTYPE,
 						"name": entry.get("name"),
 						"title": entry.get("title"),
-						"knowledge_type": entry.get("knowledge_type"),
 						"student_query": entry.get("student_query"),
 						"matched_query": candidate,
 						"match_score": 1.0,
