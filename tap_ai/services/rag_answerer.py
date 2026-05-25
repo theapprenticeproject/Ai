@@ -22,7 +22,6 @@ from tap_ai.services.prompt_bank import get_system_message_for_context
 from tap_ai.services.pinecone_store import (
     search_auto_namespaces,
     get_db_columns_for_doctype,
-    embed_query_cached,
     _record_to_text,
 )
 

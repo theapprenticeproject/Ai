@@ -58,8 +58,6 @@ Current deployment topology:
 - Dynamic configuration for TAP LMS integration
 - Admin-controlled DocType exclusion system
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history.
-
 **Technology Stack:**
 - **Backend**: Python 3.10+
 - **Framework**: Frappe (ERPNext)
@@ -112,12 +110,22 @@ graph TD
         TTSWorker["workers/tts_worker.py<br><b>Text-to-Speech</b>"]
     end
 
+    subgraph "Routing Layer"
+        FastPath["services/routing_patterns.py<br><b>Fast Regex Router</b><br>(zero-LLM fast path)"]
+        Router["services/router.py<br><b>LLM-based Router</b><br>(fallback when regex misses)"]
+    end
+
     subgraph "Services"
-        Router["services/router.py<br><b>Intelligent Router</b>"]
       KB["services/direct_response_bank.py<br><b>Knowledge Bank</b>"]
         SQL["services/sql_answerer.py<br><b>SQL Engine</b>"]
         RAG["services/rag_answerer.py<br><b>RAG Engine</b>"]
       KBRouter["services/kb_llm_router.py<br><b>KB LLM Fallback</b>"]
+    end
+
+    subgraph "Cache Layer"
+        RedisLLM[("Redis<br><b>LLM Response Cache</b><br>llm_client.py · TTL 1h")]
+        RedisKB[("Redis<br><b>KB Entries Cache</b><br>direct_response_bank.py · TTL 1h")]
+        RedisHistory[("Redis<br><b>Chat History Cache</b><br>router.py")]
     end
 
     subgraph "Data Layer"
@@ -126,26 +134,35 @@ graph TD
     end
 
     User -->|Text or Voice| QueryAPI
-    QueryAPI -->|Request| RabbitMQ
-    
+    QueryAPI -->|Request + request_id| RabbitMQ
+
     RabbitMQ -->|audio_stt_queue| STTWorker
     RabbitMQ -->|text_query_queue| LLMWorker
     RabbitMQ -->|audio_tts_queue| TTSWorker
-    
+
     STTWorker -->|Transcribed Text| RabbitMQ
-    LLMWorker -->|Route Query| Router
+    LLMWorker -->|Route Query| FastPath
+    FastPath -->|Regex match: KB or SQL| KB
+    FastPath -->|Regex miss| Router
+    Router <-->|Cache routing decisions| RedisLLM
     Router -->|Curated Match| KB
-    KB -->|High confidence| Router
-    KB -->|Miss / low confidence| KBRouter
     Router -->|Factual| SQL
     Router -->|Conceptual| RAG
     Router -->|KB fallback| KBRouter
-    
+
+    KB <-->|Read/Write KB entries| RedisKB
+    KB -->|Exact match hit| LLMWorker
+    KB -->|Miss / low confidence| KBRouter
+    KBRouter <-->|Cache LLM KB responses| RedisLLM
+
+    LLMWorker <-->|Read/Write chat history| RedisHistory
+
     SQL -->|SQL Query| PostgresDB
     RAG -->|Vector Search| PineconeDB
-    
+
     LLMWorker -->|Answer| TTSWorker
     TTSWorker -->|Audio File| PostgresDB
+    LLMWorker -->|Write result| RedisHistory
 ```
 
 ### ⚙️ Engine Robustness
@@ -180,14 +197,18 @@ graph TD
 
 #### Knowledge Bank Tool: From Curated Phrase to Direct Answer
 
-This tool handles short, high-confidence conversational intents like greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns.
+This tool handles short, high-confidence conversational intents like greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns. It operates in two stages backed by Redis caching.
 
 ```mermaid
 graph TD
-  A[User Query] --> B[Normalize and score against curated entries]
-  B --> C{Confidence threshold met?}
-  C -->|Yes| D[Return stored TAP response]
-  C -->|No| E[Fallback to Direct LLM]
+    A[User Query] --> B["Stage 1: Load KB entries<br>(Redis cache, TTL 1h)"]
+    B --> C["Normalize query + all KB candidates<br>(student_query + alternate_queries)"]
+    C --> D{Exact match<br>after normalization?}
+    D -->|Yes| E[Return stored TAP response<br>~50ms — no LLM]
+    D -->|No| F["Stage 2: kb_llm_router.py<br>Pass full KB context to LLM"]
+    F --> G{LLM: Match from KB<br>or generate answer?}
+    G -->|KB match| H[Return selected KB response]
+    G -->|No match| I[Return LLM-generated answer]
 ```
 
 ---
@@ -205,6 +226,8 @@ tap_ai/
 │   ├── __init__.py
 │   ├── query.py                         # Unified query endpoint (text + voice, async via RabbitMQ)
 │   ├── result.py                        # Unified result polling endpoint (with optional server-side wait)
+│   ├── health.py                        # System health check endpoint (Redis, PostgreSQL, RabbitMQ, OpenAI)
+│   ├── history.py                       # Conversation history management (clear chat history)
 │   ├── metrics.py                       # RabbitMQ queue health/metrics endpoint
 │   ├── wait.py                          # Delay endpoint for Glific workflow pacing
 │   ├── voice_query.py                   # Backward-compatible wrapper alias for unified query
@@ -256,7 +279,11 @@ tap_ai/
 │   ├── __init__.py
 │   └── pages/
 │
-└── tap_ai/                              # Additional modules (if any)
+└── tap_ai/                              # Frappe DocTypes and dashboards
+    ├── doctype/                         # Frappe DocType definitions (TAP Response Knowledge, etc.)
+    ├── dashboard_chart/                 # Analytics dashboard chart definitions
+    ├── number_card/                     # Analytics dashboard number card definitions
+    └── tap_ai_dashboard/                # TAP AI Analytics dashboard configuration
 
 # Root-level files
 
@@ -590,6 +617,50 @@ Response (success):
 }
 ```
 
+### Health Check
+
+**GET** `/api/method/tap_ai.api.health.health`
+
+Returns connectivity status of all external dependencies. HTTP 200 when healthy; HTTP 503 when any dependency is down.
+
+Response:
+```json
+{
+  "status": "ok",
+  "timestamp": 1716633600,
+  "checks": {
+    "redis":    { "status": "ok", "latency_ms": 2 },
+    "postgres": { "status": "ok", "latency_ms": 5 },
+    "rabbitmq": { "status": "ok", "latency_ms": 8 },
+    "openai":   { "status": "ok" }
+  }
+}
+```
+
+### Clear Conversation History
+
+**POST** `/api/method/tap_ai.api.history.clear`
+
+Clears the Redis chat history for a user so the next query starts a fresh conversation.
+
+Request body:
+```json
+{
+  "user_id": "unique_user_identifier",
+  "session_id": "optional_session_id"
+}
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "user_id": "unique_user_identifier",
+  "session_id": null,
+  "cleared_key": "tap_ai:history:unique_user_identifier"
+}
+```
+
 ### Legacy Voice Query Alias (Optional)
 
 Primary endpoint:
@@ -855,7 +926,7 @@ This project is licensed under the terms specified in `license.txt`.
 
 ---
 
-**Last Updated:** 2026-03-18  
+**Last Updated:** 2026-05-25  
 **Version:** 2.0.0  
 **Author:** Anish Aman  
 **Repository:** theapprenticeproject/Ai
