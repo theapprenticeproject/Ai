@@ -37,45 +37,46 @@ Current deployment topology:
 
 ## 🎯 Project Overview
 
-**TAP AI** is a conversational AI engine built on top of the Frappe framework. It intelligently routes user queries to specialized execution engines:
+**TAP AI** is a conversational AI engine built on top of the Frappe framework. It intelligently routes user queries to specialized execution engines.
 
-- **Knowledge Bank Tool**: For curated TAP responses, greetings, short support phrases, and high-confidence conversational matches
-- **Text-to-SQL Engine**: For factual, database-specific queries
-- **Vector RAG Engine**: For conceptual, semantic, and summarization queries
-- **Direct LLM Tool**: For open-ended conversation when no knowledge-bank entry fits
-- **RabbitMQ Worker Architecture**: Asynchronous processing for scalability
-- **Voice Processing**: STT → LLM → TTS pipeline for voice queries
+### Execution Engines
 
-**Key Features:**
-- Intelligent routing using LLMs
-- Multi-turn conversation support with history management
-- Hybrid query execution (Knowledge Bank + SQL + Vector Search + Direct LLM)
-- Automatic fallback mechanisms with confidence thresholds
-- Telegram bot integration
-- Rate limiting and authentication built-in
-- Voice input/output support via Telegram
-- Asynchronous processing with RabbitMQ
-- Dynamic configuration for TAP LMS integration
-- Admin-controlled DocType exclusion system
+| Engine | Handles | Example Queries |
+|---|---|---|
+| **Knowledge Bank** | Curated TAP responses, greetings, short support phrases | "Hi", "Who are you?", "I'm stuck" |
+| **Text-to-SQL** | Factual, structured data queries | "Show me my TAP activities" |
+| **Vector RAG** | Conceptual, semantic, summarization queries | "Explain my arts activity on creating Zentangle patterns" |
+| **Direct LLM** | Open-ended conversation with no KB match | Freeform supportive replies |
 
-**Technology Stack:**
-- **Backend**: Python 3.10+
-- **Framework**: Frappe (ERPNext)
-- **LLM**: OpenAI GPT models
-- **Vector DB**: Pinecone
-- **Database**: Remote PostgreSQL (`data.evalix.xyz`)
-- **Message Queue**: RabbitMQ (Pika)
-- **Caching**: Redis
-- **Web Framework**: Flask (for Telegram webhooks)
-- **ORM**: SQLAlchemy
+### Key Features
 
-**Language Composition:**
-- **Python**: 107,850 bytes (99%)
-- **JavaScript**: 564 bytes (1%)
+| Feature | Description |
+|---|---|
+| Intelligent routing | LLM + regex fast-path selects the right engine per query |
+| Multi-turn conversations | Chat history stored in Redis per user/session |
+| Hybrid execution | KB → SQL → RAG → LLM with automatic fallback chain |
+| Voice support | STT (Whisper) → LLM → TTS pipeline via RabbitMQ |
+| Async processing | RabbitMQ workers decouple API from execution |
+| Dynamic configuration | Per-deployment config via TAP LMS DocTypes |
+| Admin exclusions | DocType-level exclusion system for RAG indexing |
+
+### Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.10+ |
+| Framework | Frappe 15 (ERPNext) |
+| LLM | OpenAI GPT models |
+| Embeddings | OpenAI `text-embedding-3-small` |
+| Vector DB | Pinecone |
+| Database | Remote PostgreSQL (`data.evalix.xyz`) |
+| Message Queue | RabbitMQ (Pika) |
+| Caching | Redis (LLM responses, KB entries, chat history) |
+| Telegram bridge | Flask + python-telegram-bot |
 
 ---
 
-## 🚀 Core Architecture
+## ⚙️ Core Architecture
 
 The system's intelligence lies in its central router, which acts as a decision-making brain. When a query is received, it follows this flow:
 
@@ -305,51 +306,21 @@ tap_ai/
 
 ## 📦 Dependencies
 
-### Core Dependencies
+All runtime dependencies are in `requirements.txt`. Frappe is installed separately via bench.
 
-#### Database & ORM
-- `psycopg2-binary` (or equivalent) - PostgreSQL database driver for remote DB access
-- `sqlalchemy>=2.0.32` - SQL toolkit and ORM
-- `sqlalchemy-utils>=0.41.2` - SQLAlchemy utility functions
+| Package | Version | Purpose |
+|---|---|---|
+| `pika` | latest | RabbitMQ client for async worker messaging |
+| `openai` | ≥1.40.0 | GPT routing, Whisper STT, TTS synthesis |
+| `langchain-openai` | ≥0.1.17 | `ChatOpenAI` and `OpenAIEmbeddings` wrappers |
+| `pinecone` | latest | Vector database client for RAG retrieval |
+| `psycopg2-binary` | latest | PostgreSQL driver for remote DB access |
+| `requests` | latest | HTTP client used by STT worker to download audio |
+| `loguru` | ≥0.7.2 | Structured logging across all services |
+| `tenacity` | ≥9.0.0 | Retry logic for transient LLM/network errors |
+| `Frappe` | ~15.0+ | Framework — installed via bench, not requirements.txt |
 
-#### LLM & RAG
-- `openai>=1.40.0` - OpenAI API client (GPT, Whisper, TTS)
-- `langchain>=0.3.0` - LLM framework
-- `langchain-community>=0.3.0` - LangChain integrations
-- `langchain-openai>=0.1.17` - LangChain OpenAI integration
-- `tiktoken>=0.7.0` - Token counting for OpenAI
-
-#### Vector Database
-- `pinecone` - Pinecone vector database client
-
-#### Message Queue
-- `pika` - RabbitMQ client for async processing
-
-#### Data Processing
-- `numpy>=1.26.4` - Numerical computing
-
-#### Caching & Storage
-- `redis>=5.0.8` - Redis client for caching and rate limiting
-
-#### Configuration & Utilities
-- `python-dotenv>=1.0.1` - Environment variable loading
-- `pydantic>=2.8.2` - Data validation
-- `loguru>=0.7.2` - Enhanced logging
-- `tenacity>=9.0.0` - Retry library
-
-#### Telegram Bot Integration
-- `Flask` - Web framework for webhooks
-- `python-telegram-bot` - Telegram bot library
-- `requests` - HTTP client library
-
-> Note: Telegram integration dependencies are only required for `telegram_webhook.py` and are not included in `requirements.txt` by default.
-
-#### Testing
-- `pytest>=8.3.2` - Testing framework
-- `httpx>=0.27.2` - Async HTTP client
-
-### Framework
-- `Frappe~=15.0+` - Installed via bench (not in requirements.txt)
+**Telegram bot** (`telegram_webhook.py`) requires `Flask` and `python-telegram-bot` installed separately — not included in `requirements.txt`.
 
 ---
 
