@@ -221,7 +221,7 @@ def _log_query(
             "route_ms": timings.get("route_ms"),
             "processing_ms": timings.get("processing") or timings.get("processing_total"),
             "matched_kb_entry": kb_meta.get("name"),
-            "matched_kb_type": kb_meta.get("knowledge_type"),
+            "matched_kb_category": kb_meta.get("category"),
             "fallback_used": 1 if metadata.get("fallback_used") else 0,
             "status": status,
             "error": (error or "")[:500] if error else None,

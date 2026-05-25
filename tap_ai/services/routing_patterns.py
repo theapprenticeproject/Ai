@@ -55,7 +55,7 @@ KB_CONTENT_WORDS = (
 # ======================================================
 
 FAST_SQL_PATTERNS = re.compile(
-    r"\b(list|count|how many|show me all|filter|total|summarize|stats)\b",
+    r"\b(list|count|how many|show me all|filter|total|stats)\b",
     re.I
 )
 
