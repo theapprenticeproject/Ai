@@ -112,15 +112,15 @@ graph TD
     end
 
     subgraph "Routing Layer"
-        FastPath["services/routing_patterns.py<br><b>Fast Regex Router</b><br>(zero-LLM fast path)"]
-        Router["services/router.py<br><b>LLM-based Router</b><br>(fallback when regex misses)"]
+        FastPath["services/routing/routing_patterns.py<br><b>Fast Regex Router</b><br>(zero-LLM fast path)"]
+        Router["services/routing/router.py<br><b>LLM-based Router</b><br>(fallback when regex misses)"]
     end
 
     subgraph "Services"
-      KB["services/direct_response_bank.py<br><b>Knowledge Bank</b>"]
-        SQL["services/sql_answerer.py<br><b>SQL Engine</b>"]
-        RAG["services/rag_answerer.py<br><b>RAG Engine</b>"]
-      KBRouter["services/kb_llm_router.py<br><b>KB LLM Fallback</b>"]
+      KB["services/kb/direct_response_bank.py<br><b>Knowledge Bank</b>"]
+        SQL["services/sql/sql_answerer.py<br><b>SQL Engine</b>"]
+        RAG["services/rag/rag_answerer.py<br><b>RAG Engine</b>"]
+      KBRouter["services/kb/kb_llm_router.py<br><b>KB LLM Fallback</b>"]
     end
 
     subgraph "Cache Layer"
@@ -234,19 +234,20 @@ tap_ai/
 │   ├── voice_query.py                   # Backward-compatible wrapper alias for unified query
 │   └── voice_result.py                  # Backward-compatible wrapper alias for unified result
 │
-├── services/                            # Core execution engines
+├── services/                            # Core execution engines (grouped by domain)
 │   ├── __init__.py
-│   ├── router.py                        # Intelligent router (brain of system)
-│   ├── sql_answerer.py                  # Text-to-SQL engine
-│   ├── rag_answerer.py                  # Vector RAG engine
-│   ├── doctype_selector.py              # DocType selection for RAG
-│   ├── direct_response_bank.py          # Knowledge Bank: exact-match lookup and cache
-│   ├── kb_llm_router.py                 # Knowledge Bank: LLM fallback when no exact match
-│   ├── routing_patterns.py              # Regex fast-path patterns (zero-LLM routing)
-│   ├── prompt_bank.py                   # Prompt Suggestion loader and system-message renderer
-│   ├── pinecone_store.py                # Pinecone vector database integration
-│   ├── pinecone_index.py                # Pinecone index lifecycle
-│   └── ratelimit.py                     # API rate limiting utility
+│   ├── rag/                             # Vector RAG engine
+│   │   ├── rag_answerer.py              # RAG answer synthesis (query refine → search → synthesize)
+│   │   └── pinecone_store.py            # Pinecone vector store (upsert, search, auto-sync hooks)
+│   ├── sql/                             # Text-to-SQL engine
+│   │   ├── sql_answerer.py              # SQL generation → execution → answer synthesis
+│   │   └── doctype_selector.py          # LLM-based DocType selector for SQL routing
+│   ├── kb/                              # Knowledge Bank engine
+│   │   ├── direct_response_bank.py      # Exact-match KB lookup and Redis cache
+│   │   └── kb_llm_router.py             # LLM fallback when no exact KB match
+│   └── routing/                         # Router and fast-path patterns
+│       ├── router.py                    # Intelligent router (brain of system)
+│       └── routing_patterns.py          # Regex fast-path patterns (zero-LLM routing)
 │
 ├── workers/                             # RabbitMQ Background Workers
 │   ├── llm_worker.py                    # Main LLM routing worker
@@ -262,13 +263,17 @@ tap_ai/
 │   ├── __init__.py
 │   ├── config.py                        # Centralized config loader
 │   ├── llm_client.py                    # Shared LLM client (singleton + Redis response cache)
-│   └── sql_catalog.py                   # Schema catalog loader
+│   ├── sql_catalog.py                   # Schema catalog loader
+│   └── pinecone_index.py                # Pinecone index lifecycle
 │
 ├── utils/                               # Utility functions
 │   ├── __init__.py
 │   ├── dynamic_config.py                # Dynamic config for TAP LMS integration
 │   ├── remote_db.py                     # Remote PostgreSQL connection pool and query helpers
-│   └── mq.py                            # RabbitMQ publisher utility
+│   ├── mq.py                            # RabbitMQ publisher utility
+│   ├── prompt_bank.py                   # Prompt Suggestion loader and system-message renderer
+│   ├── prompt_suggestions.json          # Default prompt suggestions (fallback when no DocType)
+│   └── ratelimit.py                     # API rate limiting utility
 │
 ├── config/                              # Frappe app configuration
 │   └── __init__.py
@@ -286,6 +291,15 @@ tap_ai/
     ├── number_card/                     # Analytics dashboard number card definitions
     └── tap_ai_dashboard/                # TAP AI Analytics dashboard configuration
 
+├── tests/                               # Test suite
+│   ├── conftest.py                      # pytest path/import bootstrap
+│   ├── test_routing_patterns.py         # Routing pattern unit tests
+│   ├── test_remote_db.py                # Remote DB connectivity tests
+│   └── test_sql_sanitization.py         # SQL sanitization tests
+│
+├── scripts/                             # Standalone scripts and integrations
+│   └── telegram_webhook.py              # Telegram bot bridge (Flask, reads .env)
+│
 # Root-level files
 
 ├── README.md                            # This file
@@ -298,8 +312,7 @@ tap_ai/
 ├── .eslintrc                            # ESLint configuration
 ├── .editorconfig                        # Editor configuration
 ├── .pre-commit-config.yaml              # Pre-commit hooks
-├── __init__.py                          # Root package init
-└── telegram_webhook.py                  # Telegram bot bridge script
+└── __init__.py                          # Root package init
 ```
 
 ---
@@ -456,13 +469,13 @@ This creates `tap_ai_schema.json` needed by SQL and RAG engines.
 ### Step 2: Create Pinecone Index
 
 ```bash
-bench execute tap_ai.services.pinecone_index.cli_ensure_index
+bench execute tap_ai.infra.pinecone_index.cli_ensure_index
 ```
 
 ### Step 3: Populate Pinecone Index
 
 ```bash
-bench execute tap_ai.services.pinecone_store.cli_upsert_all
+bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
 ```
 
 ---
@@ -870,10 +883,10 @@ brew services start rabbitmq-server
 
 ```bash
 # Recreate index
-bench execute tap_ai.services.pinecone_index.cli_ensure_index
+bench execute tap_ai.infra.pinecone_index.cli_ensure_index
 
 # Upsert data
-bench execute tap_ai.services.pinecone_store.cli_upsert_all
+bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
 ```
 
 ### Issue: Workers not processing messages

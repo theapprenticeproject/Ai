@@ -15,7 +15,7 @@ from loguru import logger
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.infra.sql_catalog import load_schema
-from tap_ai.services.prompt_bank import get_system_message_for_context
+from tap_ai.utils.prompt_bank import get_system_message_for_context
 
 
 def _sanitize_prompt_value(value: Any) -> str:

@@ -10,7 +10,7 @@ import json
 import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
-from tap_ai.services.router import process_query  # Import the actual AI processor function to use in the API endpoint
+from tap_ai.services.routing.router import process_query  # Import the actual AI processor function to use in the API endpoint
 
 class DynamicConfig:
     """
@@ -428,7 +428,7 @@ if frappe.db:
     
 # ========== API Integration Example ==========
 
-from tap_ai.services.router import _get_history_from_cache, _save_history_to_cache, _append_history_to_db, get_session_transcript, list_sessions_for_user
+from tap_ai.services.routing.router import _get_history_from_cache, _save_history_to_cache, _append_history_to_db, get_session_transcript, list_sessions_for_user
 
 def get_or_create_session_id(user_id: str) -> str:
     """Get or create an active session ID for a user"""

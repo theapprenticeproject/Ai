@@ -18,8 +18,8 @@ from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
-from tap_ai.services.prompt_bank import get_system_message_for_context
-from tap_ai.services.pinecone_store import (
+from tap_ai.utils.prompt_bank import get_system_message_for_context
+from tap_ai.services.rag.pinecone_store import (
     search_auto_namespaces,
     get_db_columns_for_doctype,
     _record_to_text,

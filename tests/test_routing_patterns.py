@@ -12,7 +12,7 @@ What we're protecting against:
 """
 
 import pytest
-from tap_ai.services.routing_patterns import (
+from tap_ai.services.routing.routing_patterns import (
     match_fast_kb,
     match_fast_kb_unconditional,
     match_fast_sql,
