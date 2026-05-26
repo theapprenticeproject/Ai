@@ -37,8 +37,8 @@ from tap_ai.services.routing.router import (
 from tap_ai.services.rag.rag_answerer import (
     retrieve_vector_search,
     synthesize_vector_search_answer,
-    _refine_query_with_history,
 )
+from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.utils.mq import publish_to_queue
 from tap_ai.services.routing.routing_patterns import KB_CONTENT_WORDS, match_fast_kb_unconditional, match_fast_sql
 
@@ -391,7 +391,7 @@ class LLMWorker:
                 refined_query = query
                 refine_start = time.perf_counter()
                 try:
-                    result = _refine_query_with_history(query, chat_history) or query
+                    result = refine_query_with_history(query, chat_history) or query
                     if isinstance(result, str):
                         refined_query = result
                 except Exception:

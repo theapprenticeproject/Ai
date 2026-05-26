@@ -21,6 +21,7 @@ from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.services.sql.sql_answerer import answer_from_sql
 from tap_ai.services.rag.rag_answerer import answer_from_pinecone
 from tap_ai.services.kb.direct_response_bank import lookup_exact_direct_response
@@ -198,8 +199,7 @@ def process_query(
         else:
             refined_query = query
             try:
-                from tap_ai.services.rag.rag_answerer import _refine_query_with_history
-                refined_query = _refine_query_with_history(query, chat_history or []) or query
+                refined_query = refine_query_with_history(query, chat_history or []) or query
                 if not isinstance(refined_query, str):
                     refined_query = str(refined_query)
             except Exception as e:

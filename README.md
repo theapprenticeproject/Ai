@@ -80,14 +80,15 @@ Current deployment topology:
 
 The system's intelligence lies in its central router, which acts as a decision-making brain. When a query is received, it follows this flow:
 
-1. **Intelligent Routing:** An LLM analyzes the user's query to determine its intent.
-2. **Tool Selection:**
+1. **Query Refinement:** Before any routing, the query is rewritten into a fully standalone question using the user's chat history. This resolves pronouns and follow-up references (e.g. "summarize the first one" → "summarize the video titled X") so the router and all downstream engines always receive a self-contained query. Greetings and identity queries are exempt from refinement as their meaning is always fixed.
+2. **Intelligent Routing:** The refined query is first checked against fast regex patterns (zero-LLM). On a miss, an LLM determines the intent.
+3. **Tool Selection:**
   - For short, curated conversational intents that match the TAP response bank, it selects the **Knowledge Bank Tool**.
   - For factual, specific questions (e.g., "list all...", "how many..."), it selects the **Text-to-SQL Engine**.
   - For conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain..."), it selects the **Vector RAG Engine**.
   - For open-ended supportive conversation that does not fit the knowledge bank, it selects the **Direct LLM Tool**.
-3. **Execution & Fallback:** The chosen tool executes the query. If the knowledge bank misses or returns a low-confidence match, the system falls back to the Direct LLM tool. If SQL fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
-4. **Answer Synthesis:** The retrieved data or direct response is returned as a final, human-readable answer.
+4. **Execution & Fallback:** The chosen tool executes the query. If the knowledge bank misses or returns a low-confidence match, the system falls back to the Direct LLM tool. If SQL fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
+5. **Answer Synthesis:** The retrieved data or direct response is returned as a final, human-readable answer.
 
 ### System Flow Diagram
 
@@ -112,6 +113,7 @@ graph TD
     end
 
     subgraph "Routing Layer"
+        Refiner["utils/query_refiner.py<br><b>Query Refiner</b><br>(rewrite follow-ups using chat history)"]
         FastPath["services/routing/routing_patterns.py<br><b>Fast Regex Router</b><br>(zero-LLM fast path)"]
         Router["services/routing/router.py<br><b>LLM-based Router</b><br>(fallback when regex misses)"]
     end
@@ -142,7 +144,10 @@ graph TD
     RabbitMQ -->|audio_tts_queue| TTSWorker
 
     STTWorker -->|Transcribed Text| RabbitMQ
-    LLMWorker -->|Route Query| FastPath
+    LLMWorker -->|Greeting / identity<br>bypass refiner| FastPath
+    LLMWorker -->|Follow-up or ambiguous| Refiner
+    Refiner -->|Standalone refined query| FastPath
+    Refiner <-->|Cache refined queries| RedisLLM
     FastPath -->|Regex match: KB or SQL| KB
     FastPath -->|Regex miss| Router
     Router <-->|Cache routing decisions| RedisLLM
@@ -273,6 +278,7 @@ tap_ai/
 │   ├── mq.py                            # RabbitMQ publisher utility
 │   ├── prompt_bank.py                   # Prompt Suggestion loader and system-message renderer
 │   ├── prompt_suggestions.json          # Default prompt suggestions (fallback when no DocType)
+│   ├── query_refiner.py                 # Rewrites follow-up queries into standalone questions
 │   └── ratelimit.py                     # API rate limiting utility
 │
 ├── config/                              # Frappe app configuration
