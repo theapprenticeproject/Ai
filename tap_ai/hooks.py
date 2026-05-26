@@ -11,17 +11,17 @@ app_license = "MIT"
 # ======================================================
 doc_events = {
 	"TAP Response Knowledge": {
-		"after_insert": "tap_ai.services.direct_response_bank.invalidate_kb_cache",
-		"after_update": "tap_ai.services.direct_response_bank.invalidate_kb_cache",
-		"after_delete": "tap_ai.services.direct_response_bank.invalidate_kb_cache",
+		"after_insert": "tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
+		"after_update": "tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
+		"after_delete": "tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
 	}
 }
 
 # Invalidate prompt cache when prompt suggestions (if implemented as a doctype) change
 doc_events["Prompt Suggestion"] = {
-    "after_insert": "tap_ai.services.prompt_bank.invalidate_prompt_cache",
-    "after_update": "tap_ai.services.prompt_bank.invalidate_prompt_cache",
-    "after_delete": "tap_ai.services.prompt_bank.invalidate_prompt_cache",
+    "after_insert": "tap_ai.utils.prompt_bank.invalidate_prompt_cache",
+    "after_update": "tap_ai.utils.prompt_bank.invalidate_prompt_cache",
+    "after_delete": "tap_ai.utils.prompt_bank.invalidate_prompt_cache",
 }
 
 # ======================================================
@@ -49,8 +49,8 @@ def _register_pinecone_sync_hooks():
             for doctype in pinecone_sync_doctypes:
                 doc_events.setdefault(doctype, {})
                 doc_events[doctype].update({
-                    "after_insert": "tap_ai.services.pinecone_store.sync_to_pinecone_on_insert",
-                    "after_update": "tap_ai.services.pinecone_store.sync_to_pinecone_on_update",
+                    "after_insert": "tap_ai.services.rag.pinecone_store.sync_to_pinecone_on_insert",
+                    "after_update": "tap_ai.services.rag.pinecone_store.sync_to_pinecone_on_update",
                 })
             
             print(f"[tap_ai] Registered Pinecone sync hooks for {len(pinecone_sync_doctypes)} doctypes")

@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 import frappe
 
-SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "schema", "prompt_suggestions.json")
+SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "prompt_suggestions.json")
 CACHE_KEY = "tap_ai:prompt_suggestions:v1"
 
 

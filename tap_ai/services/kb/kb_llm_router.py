@@ -20,12 +20,12 @@ from typing import Any, Dict, List, Optional
 import frappe
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
-from tap_ai.services.direct_response_bank import (
+from tap_ai.services.kb.direct_response_bank import (
     get_direct_response_entries,
     _render_response,
     _parse_aliases,
 )
-from tap_ai.services.prompt_bank import get_system_message_for_context
+from tap_ai.utils.prompt_bank import get_system_message_for_context
 
 
 LLM_VERIFIER_CACHE_TTL = 900  # 15 minutes

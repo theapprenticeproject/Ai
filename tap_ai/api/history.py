@@ -12,7 +12,7 @@ explicit "new conversation" actions on the client side.
 
 import frappe
 from loguru import logger
-from tap_ai.services.router import _cache_key
+from tap_ai.services.routing.router import _cache_key
 
 
 @frappe.whitelist(methods=["POST"], allow_guest=True)

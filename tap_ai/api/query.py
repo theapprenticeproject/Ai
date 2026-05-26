@@ -23,7 +23,7 @@ import json
 import uuid
 import time
 from loguru import logger
-from tap_ai.services.ratelimit import check_rate_limit
+from tap_ai.utils.ratelimit import check_rate_limit
 from tap_ai.utils.mq import publish_to_queue, MQUnavailableError, MQPublishError
 
 

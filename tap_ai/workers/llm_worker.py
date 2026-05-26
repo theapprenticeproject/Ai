@@ -27,20 +27,20 @@ import json
 import pika
 import time
 from loguru import logger
-from tap_ai.services.router import (
+from tap_ai.services.routing.router import (
     process_query,
     choose_tool,
     _get_history_from_cache,
     _save_history_to_cache,
     _append_history_to_db,
 )
-from tap_ai.services.rag_answerer import (
+from tap_ai.services.rag.rag_answerer import (
     retrieve_vector_search,
     synthesize_vector_search_answer,
     _refine_query_with_history,
 )
 from tap_ai.utils.mq import publish_to_queue
-from tap_ai.services.routing_patterns import KB_CONTENT_WORDS, match_fast_kb_unconditional, match_fast_sql
+from tap_ai.services.routing.routing_patterns import KB_CONTENT_WORDS, match_fast_kb_unconditional, match_fast_sql
 
 
 def _tts_enabled_for_voice() -> bool:

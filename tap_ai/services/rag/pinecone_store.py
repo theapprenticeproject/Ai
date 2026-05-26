@@ -36,7 +36,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema
-from tap_ai.services.doctype_selector import pick_doctypes
+from tap_ai.services.sql.doctype_selector import pick_doctypes
 from tap_ai.utils.remote_db import execute_remote_query
 
 
@@ -644,7 +644,7 @@ def sync_to_pinecone_on_insert(doc, method):
     """
     try:
         frappe.enqueue(
-            "tap_ai.services.pinecone_store.upsert_doctype",
+            "tap_ai.services.rag.pinecone_store.upsert_doctype",
             doctype=doc.doctype,
             since=doc.creation,
             queue="long",
@@ -665,7 +665,7 @@ def sync_to_pinecone_on_update(doc, method):
     """
     try:
         frappe.enqueue(
-            "tap_ai.services.pinecone_store.upsert_doctype",
+            "tap_ai.services.rag.pinecone_store.upsert_doctype",
             doctype=doc.doctype,
             since=doc.modified,
             queue="long",
