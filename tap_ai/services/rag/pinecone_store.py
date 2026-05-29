@@ -330,6 +330,8 @@ def _filter_excluded(doctypes: List[str]) -> List[str]:
 # Doctypes NOT listed here get 1 record per vector.
 _SEMANTIC_GROUP_CONFIG: Dict[str, tuple] = {
     # (order_by_field, max_records_per_vector)
+
+    # --- Relational / activity records ---
     "Student":            ("grade", 8),
     "Teacher":            ("school_id", 8),
     "Student Assignment": ("assignment", 8),
@@ -338,8 +340,20 @@ _SEMANTIC_GROUP_CONFIG: Dict[str, tuple] = {
     "ImgSubmission":      ("assign_id", 8),
     "Performance":        ("enrollment", 8),
     "Submission":         ("student_assignment", 8),
-    "QuizOption":         ("question_id", 5),
     "LearningChoicePoint":("student", 6),
+    "LearningState":      ("student", 1),
+
+    # --- Content records grouped by subject / vertical ---
+    "Learning Objective": ("subject", 6),
+    "Assignment":         ("subject", 5),
+    "LearningUnit":       ("course_vertical", 5),
+    "Course Level":       ("vertical", 5),
+    "LearningStage":      ("course_level", 5),
+    "NoteContent":        ("note_type", 5),
+    "Unit":               ("course", 5),
+
+    # --- Child doctypes ---
+    "QuizOption":         ("question_id", 5),
 }
 
 
@@ -622,6 +636,19 @@ def cli_upsert_all(
 
     print(f"\nDone. Processed {total} DocTypes.\n", flush=True)
     return out
+
+def cli_delete_namespace(doctype: str) -> None:
+    """
+    Delete all vectors for a single DocType namespace from Pinecone.
+    Run this before re-upserting a DocType whose chunking strategy changed,
+    otherwise stale vectors with old IDs accumulate alongside new ones.
+
+    bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace --kwargs "{'doctype': 'QuizQuestion'}"
+    """
+    idx = _index()
+    idx.delete(delete_all=True, namespace=doctype)
+    print(f"[ok] Namespace '{doctype}' deleted from Pinecone.")
+
 
 def cli_search_auto(q: str, k: int = 6, route_top_n: int = 4):
     out = search_auto_namespaces(q=q, k=k, route_top_n=route_top_n)
