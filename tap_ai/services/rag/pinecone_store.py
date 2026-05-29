@@ -37,7 +37,7 @@ from langchain_openai import OpenAIEmbeddings
 from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema
 from tap_ai.services.sql.doctype_selector import pick_doctypes
-from tap_ai.utils.remote_db import execute_remote_query
+from tap_ai.utils.remote_db import execute_remote_query, execute_remote_query_paginated
 
 
 #  OPTIMIZATION: Embedding caching (Phase 1)
@@ -399,14 +399,13 @@ def upsert_doctype(
         if sem_cfg:
             group_field, _ = sem_cfg
             base = f'SELECT * FROM "{table}" WHERE docstatus < 2'
-            query = base + (f' AND modified >= %s' if since else '') + f' ORDER BY "{group_field}"'
+            query = base + (' AND modified >= %s' if since else '') + f' ORDER BY "{group_field}", name'
         else:
             query = f'SELECT * FROM "{table}" WHERE docstatus < 2'
-            if since:
-                query += ' AND modified >= %s'
+            query += (' AND modified >= %s' if since else '') + ' ORDER BY name'
 
         params = [since] if since else []
-        rows = execute_remote_query(query, tuple(params))
+        rows = execute_remote_query_paginated(query, tuple(params) if params else None)
 
         current_group: List[Dict[str, Any]] = []
         current_key: Optional[str] = None
@@ -595,7 +594,7 @@ def cli_upsert_all(
     since: Optional[str] = None,
 ) -> Dict[str, Any]:
     
-    '''bench execute tap_ai.services.pinecone_store.cli_upsert_all'''
+    '''bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all'''
 
     if doctypes is None:
         schema = load_schema()

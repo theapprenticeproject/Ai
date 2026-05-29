@@ -548,21 +548,21 @@ def cli(q: str, user_id: str = "default_user"):
 
     Examples:
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'hello','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'hello','user_id':'user123'}"
 
     Turn 1:
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list videos with basic difficulty','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'list videos with basic difficulty','user_id':'user123'}"
 
     Turn 2:
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'summarize the first one','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'summarize the first one','user_id':'user123'}"
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list all the videos with easy difficulty','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'list all the videos with easy difficulty','user_id':'user123'}"
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'list all the activities present','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'list all the activities present','user_id':'user123'}"
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points','user_id':'user123'}"
 
-    bench execute tap_ai.services.router.cli --kwargs "{'q':'what is budget','user_id':'user123'}"
+    bench execute tap_ai.services.routing.router.cli --kwargs "{'q':'what is budget','user_id':'user123'}"
     
     """
 

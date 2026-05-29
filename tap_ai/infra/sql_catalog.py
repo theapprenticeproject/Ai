@@ -9,7 +9,7 @@ calls `load_schema()` to get the current schema rather than hitting the disk
 on every request.
 
 To refresh the on-disk schema, run:
-    bench execute tap_ai.schema.generate_schema.generate
+    bench execute tap_ai.schema.generate_schema.cli
 Then the next call to load_schema(force_refresh=True) or after the TTL expires
 will pick up the new file.
 """

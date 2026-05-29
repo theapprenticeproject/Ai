@@ -8,7 +8,7 @@ writes the result to `tap_ai_schema.json`. That JSON file is the static schema
 catalog consumed by `sql_catalog.py` and the SQL-generation pipeline.
 
 Run this whenever the remote DB schema changes:
-    bench execute tap_ai.schema.generate_schema.generate
+    bench execute tap_ai.schema.generate_schema.cli
 
 The generated file is committed to the repo so workers can load it without a
 live DB connection at startup. Re-generation requires a working
