@@ -339,7 +339,7 @@ _SEMANTIC_GROUP_CONFIG: Dict[str, tuple] = {
     "Performance":        ("enrollment", 8),
     "Submission":         ("student_assignment", 8),
     "QuizOption":         ("question_id", 5),
-    "QuizQuestion":       ("quiz", 5),
+    "QuizQuestion":       ("parent", 5),
     "LearningChoicePoint":("student", 6),
 }
 
