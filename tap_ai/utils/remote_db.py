@@ -169,6 +169,32 @@ def execute_remote_query(sql: str, params: Optional[tuple] = None) -> List[Dict[
                 pass
 
 
+def execute_remote_query_paginated(
+    sql: str,
+    params: Optional[tuple] = None,
+    page_size: int = 500,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch all rows for a query using LIMIT/OFFSET pagination, bypassing the
+    max_rows safety cap that execute_remote_query enforces. The SQL must not
+    already contain LIMIT or OFFSET clauses. An ORDER BY is required for
+    deterministic page boundaries — callers must add one before calling this.
+    """
+    all_rows: List[Dict[str, Any]] = []
+    offset = 0
+    base_sql = sql.rstrip(";").rstrip()
+
+    while True:
+        page_sql = f"{base_sql} LIMIT {page_size} OFFSET {offset}"
+        page = execute_remote_query(page_sql, params)
+        all_rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    return all_rows
+
+
 def get_remote_all(doctype: str, fields: List[str] = None, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """
     Equivalent to frappe.get_all() but for remote database
