@@ -324,44 +324,49 @@ def _filter_excluded(doctypes: List[str]) -> List[str]:
 # Upsert pipeline
 # -------------------------------------------------------------------
 
-def upsert_doctype(  
-    doctype: str,  
-    since: Optional[str] = None,  
-    group_records: int = 10,  
-    embed_batch: int = 100,     #  OPTIMIZATION: Increased from 10 to 100 (Phase 3)
-) -> Dict[str, Any]:  
-    """
-     OPTIMIZATION: Incremental upsert with larger batches (Phase 3)
-    Batch size increased from 10 to 100 for 90% API cost reduction
-    """
-    idx = _index()  
+# Doctypes whose records share a natural grouping dimension.
+# Records are sorted by the field and up to max_size consecutive records
+# with the same field value are packed into one vector.
+# Doctypes NOT listed here get 1 record per vector.
+_SEMANTIC_GROUP_CONFIG: Dict[str, tuple] = {
+    # (order_by_field, max_records_per_vector)
+    "Student":            ("grade", 8),
+    "Teacher":            ("school_id", 8),
+    "Student Assignment": ("assignment", 8),
+    "StudentQuizAttempt": ("quiz", 8),
+    "StudentReflection":  ("student", 6),
+    "ImgSubmission":      ("assign_id", 8),
+    "Performance":        ("enrollment", 8),
+    "Submission":         ("student_assignment", 8),
+    "QuizOption":         ("question_id", 5),
+    "LearningChoicePoint":("student", 6),
+}
 
-    # VideoClass rows can be very large (transcripts), so group fewer records per vector.
-    if doctype == "VideoClass":
-        try:
-            group_records = int(get_config("video_embedding_group_records") or 2)
-        except Exception:
-            group_records = 2
-  
-    total_records = 0  
-    total_vectors = 0  
-    table = f'tab{doctype}'  
-  
-    buffer_texts, buffer_ids, buffer_meta = [], [], []
+
+def upsert_doctype(
+    doctype: str,
+    since: Optional[str] = None,
+    embed_batch: int = 100,
+) -> Dict[str, Any]:
+    idx = _index()
+    sem_cfg = _SEMANTIC_GROUP_CONFIG.get(doctype)  # (field, max_size) or None
+
+    total_records = 0
+    total_vectors = 0
+    table = f'tab{doctype}'
+
+    buffer_texts: List[str] = []
+    buffer_ids: List[str] = []
+    buffer_meta: List[Dict[str, Any]] = []
     meta_cache: Dict[str, Any] = {}
 
     def flush():
         nonlocal total_vectors
         if not buffer_texts:
             return
-        #  OPTIMIZATION: Use cached embeddings (Phase 1)
         vectors = embed_documents_cached(buffer_texts)
         payload = [
-            {
-                "id": buffer_ids[i],
-                "values": vectors[i],
-                "metadata": buffer_meta[i],
-            }
+            {"id": buffer_ids[i], "values": vectors[i], "metadata": buffer_meta[i]}
             for i in range(len(buffer_texts))
         ]
         idx.upsert(vectors=payload, namespace=doctype)
@@ -370,73 +375,65 @@ def upsert_doctype(
         buffer_ids.clear()
         buffer_meta.clear()
 
+    def emit_group(group: List[Dict[str, Any]]):
+        if not group:
+            return
+        record_ids = [str(r["name"]) for r in group]
+        text = "\n\n---\n\n".join(
+            _record_to_text(doctype, r, meta_cache=meta_cache) for r in group
+        )
+        raw_id = f"{doctype}:{record_ids[0]}"
+        safe_id = raw_id.encode("ascii", "ignore").decode("ascii")
+        buffer_texts.append(text)
+        buffer_ids.append(safe_id)
+        buffer_meta.append({
+            "doctype": doctype,
+            "record_ids": record_ids,
+            "count": len(group),
+            "context_preview": text[:25000],
+        })
+        if len(buffer_texts) >= embed_batch:
+            flush()
+
     try:
-        # Build the raw SQL to ensure docstatus and modified filters work correctly
-        query = f'SELECT * FROM "{table}" WHERE docstatus < 2'
-        params = []
-        if since:
-            query += ' AND modified >= %s'
-            params.append(since)
-            
-        # Use the central utility
+        if sem_cfg:
+            group_field, _ = sem_cfg
+            base = f'SELECT * FROM "{table}" WHERE docstatus < 2'
+            query = base + (f' AND modified >= %s' if since else '') + f' ORDER BY "{group_field}"'
+        else:
+            query = f'SELECT * FROM "{table}" WHERE docstatus < 2'
+            if since:
+                query += ' AND modified >= %s'
+
+        params = [since] if since else []
         rows = execute_remote_query(query, tuple(params))
-        
-        group: List[Dict[str, Any]] = []
+
+        current_group: List[Dict[str, Any]] = []
+        current_key: Optional[str] = None
 
         for row in rows:
             total_records += 1
-            group.append(row)
 
-            if len(group) >= group_records:
-                record_ids = [str(r["name"]) for r in group]
-                text = "\n\n---\n\n".join(
-                    _record_to_text(doctype, r, meta_cache=meta_cache) for r in group
-                )
+            if sem_cfg:
+                group_field, max_size = sem_cfg
+                row_key = str(row.get(group_field) or "__null__")
 
-                meta = {
-                    "doctype": doctype,
-                    "record_ids": record_ids,
-                    "count": len(group),
-                    # Store a compact preview to avoid DB hydration at query time when possible.
-                    "context_preview": text[:25000],
-                }
+                # Flush current group when key changes or group is full
+                if current_key != row_key or len(current_group) >= max_size:
+                    emit_group(current_group)
+                    current_group = []
+                    current_key = row_key
 
-                # Ensure ID is strictly ASCII for Pinecone
-                raw_id = f"{doctype}:{record_ids[0]}"
-                safe_id = raw_id.encode("ascii", "ignore").decode("ascii")
+                current_group.append(row)
+            else:
+                # 1 record per vector for content/reference doctypes
+                emit_group([row])
 
-                buffer_texts.append(text)
-                buffer_ids.append(safe_id)
-                buffer_meta.append(meta)
-                group = []
-
-                if len(buffer_texts) >= embed_batch:
-                    flush()
-
-        if group:
-            record_ids = [str(r["name"]) for r in group]
-            text = "\n\n---\n\n".join(
-                _record_to_text(doctype, r, meta_cache=meta_cache) for r in group
-            )
-            
-            # Ensure ID is strictly ASCII for Pinecone
-            raw_id = f"{doctype}:{record_ids[0]}"
-            safe_id = raw_id.encode("ascii", "ignore").decode("ascii")
-            
-            buffer_texts.append(text)
-            buffer_ids.append(safe_id)
-            buffer_meta.append({
-                "doctype": doctype,
-                "record_ids": record_ids,
-                "count": len(group),
-                "context_preview": text[:25000],
-            })
-
+        emit_group(current_group)
         flush()
-        
-        #  OPTIMIZATION: Record upsert timestamp for incremental delta detection (Phase 3)
+
         frappe.cache().set(f"upsert_timestamp:{doctype}", datetime.now().isoformat())
-        
+
     except Exception as e:
         print(f"Error fetching remote data for {doctype}: {e}")
 
