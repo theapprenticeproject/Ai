@@ -201,6 +201,37 @@ graph TD
     E --> F[Rich Context Chunks]
 ```
 
+##### Chunking Strategy
+
+Vectors are built at index time by `pinecone_store.upsert_doctype`. The strategy depends on the DocType:
+
+| DocType type | Strategy | Rationale |
+|---|---|---|
+| Content / reference (`VideoClass`, `Assignment`, `NoteContent`, `LearningUnit`, `Course Level`, etc.) | **1 record → 1 vector** | Each record is already a self-contained semantic unit; grouping dilutes the signal |
+| Relational / activity records (`Student`, `Teacher`, `StudentQuizAttempt`, etc.) | **Semantic grouping** — records sharing a natural dimension are packed into one vector (max 5–8 per vector) | Records in the same grade, batch, or assignment are queried together, so co-locating them improves retrieval coherence |
+
+**Semantic group dimensions:**
+
+| DocType | Groups by | Max per vector |
+|---|---|---|
+| `Student` | `grade` | 8 |
+| `Teacher` | `school_id` | 8 |
+| `Student Assignment` | `assignment` | 8 |
+| `StudentQuizAttempt` | `quiz` | 8 |
+| `StudentReflection` | `student` | 6 |
+| `ImgSubmission` | `assign_id` | 8 |
+| `Performance` | `enrollment` | 8 |
+| `Submission` | `student_assignment` | 8 |
+| `QuizOption` | `question_id` | 5 |
+| `LearningChoicePoint` | `student` | 6 |
+
+Any DocType **not** listed above defaults to **1 record per vector**. Adding a new DocType requires no code change — it is automatically indexed at 1:1 granularity. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pinecone_store.py`.
+
+> **Re-indexing note:** After deploying a chunking strategy change, run a full re-index to replace stale vectors:
+> ```bash
+> bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
+> ```
+
 #### Knowledge Bank Tool: From Curated Phrase to Direct Answer
 
 This tool handles short, high-confidence conversational intents like greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns. It operates in two stages backed by Redis caching.
@@ -916,7 +947,7 @@ This project is licensed under the terms specified in `license.txt`.
 
 ---
 
-**Last Updated:** 2026-05-25  
+**Last Updated:** 2026-05-29  
 **Version:** 2.0.0  
 **Author:** Anish Aman  
 **Repository:** theapprenticeproject/Ai
