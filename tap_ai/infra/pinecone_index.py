@@ -83,7 +83,7 @@ def delete_index(index_name: Optional[str] = None) -> dict:
 # ---- bench CLI ----
 def cli_ensure_index(index_name: Optional[str] = None, dimension: Optional[int] = None):
     '''
-    bench execute tap_ai.services.pinecone_index.cli_ensure_index
+    bench execute tap_ai.infra.pinecone_index.cli_ensure_index
     '''
     out = ensure_index(index_name=index_name, dimension=dimension)
     print(frappe.as_json(out))
@@ -93,7 +93,7 @@ def cli_delete_index(index_name: Optional[str] = None):
     """
     Bench command to delete the index.
     Example:
-      bench execute tap_ai.services.pinecone_index.cli_delete_index
+      bench execute tap_ai.infra.pinecone_index.cli_delete_index
     """
     out = delete_index(index_name=index_name)
     print(frappe.as_json(out))

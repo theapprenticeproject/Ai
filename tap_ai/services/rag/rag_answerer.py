@@ -609,7 +609,7 @@ def cli(q: str, k: int = 6, route_top_n: int = 4):
     """
     Bench command to test the RAG pipeline.
 
-    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points'}"
-    bench execute tap_ai.services.rag_answerer.cli --kwargs "{'q':'Can you provide a summary of the video titled Needs First, Wants Later (2024)'}"
+    bench execute tap_ai.services.rag.rag_answerer.cli --kwargs "{'q':'Find a video about financial literacy and goal setting and summarize its key points'}"
+    bench execute tap_ai.services.rag.rag_answerer.cli --kwargs "{'q':'Can you provide a summary of the video titled Needs First, Wants Later (2024)'}"
     """
     return answer_from_pinecone(query=q, k=k, route_top_n=route_top_n)

@@ -594,7 +594,7 @@ def cli_upsert_all(
     since: Optional[str] = None,
 ) -> Dict[str, Any]:
     
-    '''bench execute tap_ai.services.pinecone_store.cli_upsert_all'''
+    '''bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all'''
 
     if doctypes is None:
         schema = load_schema()
