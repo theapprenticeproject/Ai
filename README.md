@@ -223,7 +223,6 @@ Vectors are built at index time by `pinecone_store.upsert_doctype`. The strategy
 | `Performance` | `enrollment` | 8 |
 | `Submission` | `student_assignment` | 8 |
 | `QuizOption` | `question_id` | 5 |
-| `QuizQuestion` | `quiz` | 5 |
 | `LearningChoicePoint` | `student` | 6 |
 
 Any DocType **not** listed above defaults to **1 record per vector**. Adding a new DocType requires no code change — it is automatically indexed at 1:1 granularity. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pinecone_store.py`.
