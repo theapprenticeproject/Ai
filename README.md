@@ -203,14 +203,15 @@ graph TD
 
 ##### Chunking Strategy
 
-Vectors are built at index time by `pinecone_store.upsert_doctype`. The strategy depends on the DocType:
+Vectors are built at index time by `pinecone_store.upsert_doctype`. There are three strategies:
 
-| DocType type | Strategy | Rationale |
+| Strategy | Applies to | Rationale |
 |---|---|---|
-| Content / reference (`VideoClass`, `Assignment`, `NoteContent`, `LearningUnit`, `Course Level`, etc.) | **1 record → 1 vector** | Each record is already a self-contained semantic unit; grouping dilutes the signal |
-| Relational / activity records (`Student`, `Teacher`, `StudentQuizAttempt`, etc.) | **Semantic grouping** — records sharing a natural dimension are packed into one vector (max 5–8 per vector) | Records in the same grade, batch, or assignment are queried together, so co-locating them improves retrieval coherence |
+| **1 record → 1 vector** | Long-form content (`VideoClass`, `Quiz`, `QuizQuestion`, `Competency`, `ProjectChallenge`, etc.) | Each record is a distinct semantic unit with rich text; grouping would truncate content and dilute the embedding |
+| **Semantic grouping by subject / vertical** | Structured content (`LearningUnit`, `Learning Objective`, `Assignment`, `Course Level`, etc.) | Records sharing a subject or vertical are conceptually related; co-locating them improves recall without significant precision loss |
+| **Semantic grouping by relational key** | Activity / relational records (`Student`, `Teacher`, `StudentQuizAttempt`, etc.) | Records tied to the same student, assignment, or batch are always queried together |
 
-**Semantic group dimensions:**
+**Semantic group config (`_SEMANTIC_GROUP_CONFIG`):**
 
 | DocType | Groups by | Max per vector |
 |---|---|---|
@@ -236,11 +237,12 @@ Vectors are built at index time by `pinecone_store.upsert_doctype`. The strategy
 | **Child doctypes** | | |
 | `QuizOption` | `question_id` | 5 |
 
-Any DocType **not** listed above defaults to **1 record per vector**. Adding a new DocType requires no code change — it is automatically indexed at 1:1 granularity. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pinecone_store.py`.
+Any DocType **not** listed above defaults to **1 record per vector**. New doctypes require no code change — they index at 1:1 automatically. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pinecone_store.py`.
 
-> **Re-indexing note:** After deploying a chunking strategy change, run a full re-index to replace stale vectors:
+> **Re-indexing note:** After a chunking strategy change, delete the affected namespace first (to remove stale vectors with old IDs), then re-upsert:
 > ```bash
-> bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
+> bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace --kwargs "{'doctype': 'MyDocType'}"
+> bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all --kwargs "{'doctypes': ['MyDocType']}"
 > ```
 
 #### Knowledge Bank Tool: From Curated Phrase to Direct Answer
