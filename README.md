@@ -214,6 +214,7 @@ Vectors are built at index time by `pinecone_store.upsert_doctype`. The strategy
 
 | DocType | Groups by | Max per vector |
 |---|---|---|
+| **Relational / activity** | | |
 | `Student` | `grade` | 8 |
 | `Teacher` | `school_id` | 8 |
 | `Student Assignment` | `assignment` | 8 |
@@ -222,8 +223,18 @@ Vectors are built at index time by `pinecone_store.upsert_doctype`. The strategy
 | `ImgSubmission` | `assign_id` | 8 |
 | `Performance` | `enrollment` | 8 |
 | `Submission` | `student_assignment` | 8 |
-| `QuizOption` | `question_id` | 5 |
 | `LearningChoicePoint` | `student` | 6 |
+| `LearningState` | `student` | 1 |
+| **Content grouped by subject / vertical** | | |
+| `Learning Objective` | `subject` | 6 |
+| `Assignment` | `subject` | 5 |
+| `LearningUnit` | `course_vertical` | 5 |
+| `Course Level` | `vertical` | 5 |
+| `LearningStage` | `course_level` | 5 |
+| `NoteContent` | `note_type` | 5 |
+| `Unit` | `course` | 5 |
+| **Child doctypes** | | |
+| `QuizOption` | `question_id` | 5 |
 
 Any DocType **not** listed above defaults to **1 record per vector**. Adding a new DocType requires no code change — it is automatically indexed at 1:1 granularity. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pinecone_store.py`.
 
