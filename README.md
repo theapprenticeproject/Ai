@@ -516,6 +516,33 @@ bench execute tap_ai.infra.pinecone_index.cli_ensure_index
 bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
 ```
 
+### Pinecone Maintenance Commands
+
+**Re-index a single DocType:**
+```bash
+bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all \
+  --kwargs "{'doctypes': ['VideoClass']}"
+```
+
+**Delete a namespace before re-indexing** (required when a DocType's chunking strategy changes — otherwise stale vectors accumulate):
+```bash
+bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace \
+  --kwargs "{'doctype': 'QuizQuestion'}"
+```
+
+Then re-upsert:
+```bash
+bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all \
+  --kwargs "{'doctypes': ['QuizQuestion']}"
+```
+
+**Delete and recreate the entire index** (full reset):
+```bash
+bench execute tap_ai.infra.pinecone_index.cli_delete_index
+bench execute tap_ai.infra.pinecone_index.cli_ensure_index
+bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
+```
+
 ---
 
 ## 🧪 Testing
