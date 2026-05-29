@@ -624,6 +624,19 @@ def cli_upsert_all(
     print(f"\nDone. Processed {total} DocTypes.\n", flush=True)
     return out
 
+def cli_delete_namespace(doctype: str) -> None:
+    """
+    Delete all vectors for a single DocType namespace from Pinecone.
+    Run this before re-upserting a DocType whose chunking strategy changed,
+    otherwise stale vectors with old IDs accumulate alongside new ones.
+
+    bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace --kwargs "{'doctype': 'QuizQuestion'}"
+    """
+    idx = _index()
+    idx.delete(delete_all=True, namespace=doctype)
+    print(f"[ok] Namespace '{doctype}' deleted from Pinecone.")
+
+
 def cli_search_auto(q: str, k: int = 6, route_top_n: int = 4):
     out = search_auto_namespaces(q=q, k=k, route_top_n=route_top_n)
     print(frappe.as_json(out, indent=2))
