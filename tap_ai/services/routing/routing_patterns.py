@@ -154,6 +154,32 @@ FAST_KB_UNCONDITIONAL_PATTERNS = re.compile(
 )
 
 
+import re as _re
+
+# Matches a quiz question (has A), B), C) options) in assistant message
+_QUIZ_OPTIONS_RE = _re.compile(r'\bA\).*\bB\).*\bC\)', _re.S)
+# Matches a bare single-letter answer: "A", "B", "c.", etc.
+_QUIZ_BARE_ANSWER_RE = _re.compile(r'^\s*[A-Da-d]\s*[).:,]?\s*$')
+# Matches "Option A" style answers
+_QUIZ_OPTION_PREFIX_RE = _re.compile(r'^[Oo]ption\s+[A-Da-d]\b')
+
+
+def is_quiz_context(history: list) -> bool:
+    """True if the most recent assistant message contained quiz options (A), B), C))."""
+    if not history:
+        return False
+    last = next((m for m in reversed(history) if m.get("role") == "assistant"), None)
+    if not last:
+        return False
+    return bool(_QUIZ_OPTIONS_RE.search(last.get("content", "")))
+
+
+def is_quiz_answer(query: str) -> bool:
+    """True if the query looks like a quiz option answer (bare letter or 'Option X')."""
+    q = (query or "").strip()
+    return bool(_QUIZ_BARE_ANSWER_RE.match(q) or _QUIZ_OPTION_PREFIX_RE.match(q))
+
+
 def match_fast_kb(query: str) -> bool:
     """Check if query matches the full knowledge_bank fast patterns (use on refined query)."""
     q = (query or "").strip()
