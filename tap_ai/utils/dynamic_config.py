@@ -9,7 +9,9 @@ import frappe
 import json
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from tap_ai.models import ContentDetails, Enrollment, UserProfile
 from tap_ai.services.routing.router import process_query  # Import the actual AI processor function to use in the API endpoint
 
 class DynamicConfig:
@@ -95,146 +97,98 @@ class DynamicConfig:
         return user_config.get('profile_doctype') if user_config else None
     
     @classmethod
-    def get_user_profile(cls, user_type: str, identifier_value: str, batch_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_user_profile(cls, user_type: str, identifier_value: str, batch_id: Optional[str] = None) -> Optional[UserProfile]:
         """
-        Fetch user profile dynamically based on user_type
-        NOW PROPERLY HANDLES ENROLLMENT CHILD TABLE!
-        
+        Fetch user profile dynamically based on user_type.
+
         Args:
             user_type: 'student' or 'teacher'
             identifier_value: Value to search (e.g., glific_id)
             batch_id: Optional specific batch ID (for students with multiple enrollments)
-            
-        Returns:
-            User profile data as dict with enrollment info
-            
-        Example:
-            >>> # Get student with current enrollment
-            >>> profile = DynamicConfig.get_user_profile('student', '12345')
-            >>> print(profile['name'])
-            >>> print(profile['current_enrollment']['batch'])  # From child table!
-            >>> print(profile['enrollments'])  # All enrollments
-            
-            >>> # Get specific enrollment
-            >>> profile = DynamicConfig.get_user_profile('student', '12345', 'BT-2025-G8-A')
-            >>> print(profile['current_enrollment']['batch'])  # Specific batch
         """
         user_config = cls.get_user_type_config(user_type)
         if not user_config:
             return None
-        
+
         profile_doctype = user_config.get('profile_doctype')
         identifier_field = user_config.get('identifier_field', 'glific_id')
-        
+
         if not profile_doctype:
             return None
-        
+
         try:
-            # Query the user profile
-            user = frappe.get_doc(
-                profile_doctype,
-                {identifier_field: identifier_value}
-            )
-            
+            user = frappe.get_doc(profile_doctype, {identifier_field: identifier_value})
+
             if not user:
                 return None
-            
-            # Build base profile
-            profile = {
-                'id': user.name,
-                'name': getattr(user, user_config.get('name_field', 'name'), None),
-                'phone': getattr(user, user_config.get('phone_field', 'phone'), None),
-                'grade': getattr(user, user_config.get('grade_field', 'grade'), None),
-                'glific_id': getattr(user, identifier_field, None),
-                '_raw': user  # Keep reference to full doc
-            }
-            
-            # Handle enrollment child table for students
+
+            enrollments: List[Enrollment] = []
+            batch = None
+
             enrollment_config = user_config.get('enrollment_config')
             if enrollment_config:
                 enrollments = cls._get_enrollments(user, enrollment_config, batch_id)
-                profile['enrollments'] = enrollments
-                profile['current_enrollment'] = enrollments[0] if enrollments else None
-                # For backward compatibility, add batch at top level
-                profile['batch'] = enrollments[0]['batch'] if enrollments else None
+                batch = enrollments[0].batch if enrollments else None
             else:
-                # Simple batch field (for teachers, etc.)
                 batch_field = user_config.get('batch_field')
                 if batch_field:
-                    profile['batch'] = getattr(user, batch_field, None)
-                
-            return profile
-                
+                    batch = getattr(user, batch_field, None)
+
+            return UserProfile(
+                id=user.name,
+                name=getattr(user, user_config.get('name_field', 'name'), None),
+                phone=getattr(user, user_config.get('phone_field', 'phone'), None),
+                grade=getattr(user, user_config.get('grade_field', 'grade'), None),
+                glific_id=getattr(user, identifier_field, None),
+                batch=batch,
+                enrollments=enrollments,
+                current_enrollment=enrollments[0] if enrollments else None,
+            )
+
         except Exception as e:
             frappe.log_error(f"Error fetching {user_type} profile: {str(e)}")
             return None
     
     @classmethod
-    def _get_enrollments(cls, student_doc, enrollment_config: Dict, specific_batch_id: Optional[str] = None) -> List[Dict]:
-        """
-        Extract enrollments from student's enrollment child table
-        
-        The Student DocType in TAP LMS has an 'enrollment' child table with:
-        - batch (Link to Batch)
-        - course (Link to Course Level)
-        - grade (Select)
-        - school (Link to School)
-        - date_joining (Date)
-        
-        Args:
-            student_doc: Student document
-            enrollment_config: Configuration for enrollment child table
-            specific_batch_id: If provided, return only this enrollment
-            
-        Returns:
-            List of enrollment dicts, sorted by date_joining (most recent first)
-        """
+    def _get_enrollments(cls, student_doc, enrollment_config: Dict, specific_batch_id: Optional[str] = None) -> List[Enrollment]:
+        """Extract enrollments from student's enrollment child table, sorted most-recent first."""
         child_table_name = enrollment_config.get('child_table', 'enrollment')
-        
+
         if not hasattr(student_doc, child_table_name):
             return []
-        
+
         child_table = getattr(student_doc, child_table_name)
         if not child_table:
             return []
-        
-        # Field mappings from config
+
         batch_field = enrollment_config.get('batch_field', 'batch')
         course_field = enrollment_config.get('course_field', 'course')
         grade_field = enrollment_config.get('grade_field', 'grade')
         school_field = enrollment_config.get('school_field', 'school')
         date_field = enrollment_config.get('date_joining_field', 'date_joining')
-        
-        enrollments = []
-        for enrollment_row in child_table:
-            batch_value = getattr(enrollment_row, batch_field, None)
-            
-            # If specific batch requested, filter to only that one
+
+        enrollments: List[Enrollment] = []
+        for row in child_table:
+            batch_value = getattr(row, batch_field, None)
             if specific_batch_id and batch_value != specific_batch_id:
                 continue
-            
-            enrollment_data = {
-                'batch': batch_value,
-                'course': getattr(enrollment_row, course_field, None),
-                'grade': getattr(enrollment_row, grade_field, None),
-                'school': getattr(enrollment_row, school_field, None),
-                'date_joining': getattr(enrollment_row, date_field, None),
-                '_raw': enrollment_row
-            }
-            enrollments.append(enrollment_data)
-        
-        # Sort by date_joining, most recent first (current enrollment first)
-        def _parse_date(x):
-            raw = x.get('date_joining')
-            if not raw:
+            enrollments.append(Enrollment(
+                batch=batch_value,
+                course=getattr(row, course_field, None),
+                grade=getattr(row, grade_field, None),
+                school=getattr(row, school_field, None),
+                date_joining=getattr(row, date_field, None),
+            ))
+
+        def _parse_date(e: Enrollment):
+            if not e.date_joining:
                 return datetime.min
             try:
-                return datetime.fromisoformat(str(raw))
+                return datetime.fromisoformat(str(e.date_joining))
             except (ValueError, TypeError):
                 return datetime.min
 
         enrollments.sort(key=_parse_date, reverse=True)
-        
         return enrollments
     
     # ========== DocType Mapping Methods ==========
@@ -364,24 +318,20 @@ def get_video_details(video_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_content_details(content_type: str, content_id: str) -> Optional[Dict[str, Any]]:
-    """Generic function to get any content type details"""
+def get_content_details(content_type: str, content_id: str) -> Optional[ContentDetails]:
+    """Generic function to get any content type details."""
     if content_type == 'video':
-        return get_video_details(content_id)
-    
+        raw = get_video_details(content_id)
+        return ContentDetails.model_validate(raw) if raw else None
+
     mapping = DynamicConfig.get_doctype_mapping(content_type)
     if not mapping:
         return None
-    
+
     try:
         doc = frappe.get_doc(mapping['doctype'], content_id)
-        field_map = mapping['fields']
-        
-        result = {}
-        for logical_field, actual_field in field_map.items():
-            result[logical_field] = getattr(doc, actual_field, None)
-        
-        return result
+        result = {lf: getattr(doc, af, None) for lf, af in mapping['fields'].items()}
+        return ContentDetails.model_validate(result)
     except Exception as e:
         frappe.log_error(f"Error fetching {content_type} {content_id}: {str(e)}")
         return None
@@ -480,10 +430,10 @@ def query_endpoint(**kwargs):
         content_details = get_content_details(content_type, content_id)  
       
     # Get or create session ID for conversation grouping  
-    session_id = kwargs.get('session_id') or get_or_create_session_id(user_profile['name'])  
-      
-    # Get chat history for context using session-aware cache  
-    history = _get_history_from_cache(user_profile['name'], session_id=session_id)  
+    session_id = kwargs.get('session_id') or get_or_create_session_id(user_profile.name)
+
+    # Get chat history for context using session-aware cache
+    history = _get_history_from_cache(user_profile.name, session_id=session_id)
       
     # Process query with TAP AI - ACTUAL IMPLEMENTATION  
     try:  
@@ -500,9 +450,9 @@ def query_endpoint(**kwargs):
             {"role": "assistant", "content": result.get("answer", "")},
         ]
         history.extend(new_messages)
-        _save_history_to_cache(user_profile['name'], new_messages, session_id=session_id)  
-        _append_history_to_db(  
-            user_profile['name'],  
+        _save_history_to_cache(user_profile.name, new_messages, session_id=session_id)
+        _append_history_to_db(
+            user_profile.name,
             new_messages,
             session_id=session_id,  
             metadata={"source": "api"}  
@@ -512,10 +462,10 @@ def query_endpoint(**kwargs):
             'success': True,  
             'answer': result.get('answer', 'No answer generated'),  
             'session_id': session_id,  
-            'user_profile': {  
-                'name': user_profile['name'],  
-                'batch': user_profile['batch'],  # From current enrollment  
-                'enrollments': user_profile.get('enrollments', [])  # All enrollments  
+            'user_profile': {
+                'name': user_profile.name,
+                'batch': user_profile.batch,
+                'enrollments': [e.model_dump() for e in user_profile.enrollments],
             },  
             'content_details': content_details,  
             'metadata': {  

@@ -11,13 +11,14 @@ DynamicConfig compatible
 
 import json
 import time
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import frappe
 from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.models import ContentDetails, UserProfile
 from tap_ai.utils.prompt_bank import get_system_message_for_context
 from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.services.rag.pinecone_store import search_auto_namespaces
@@ -42,21 +43,21 @@ def _to_float(value: Any, default: float) -> float:
 # ======================================================
 
 def _build_metadata_filter(
-    user_profile: Optional[Dict] = None,
-    content_details: Optional[Dict] = None
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
 ) -> Optional[Dict[str, Any]]:
     filters = {}
 
     if user_profile:
-        if user_profile.get("grade"):
-            filters["grade"] = user_profile["grade"]
-        if user_profile.get("batch"):
-            filters["batch"] = user_profile["batch"]
-        if user_profile.get("current_enrollment", {}).get("course"):
-            filters["course"] = user_profile["current_enrollment"]["course"]
+        if user_profile.grade:
+            filters["grade"] = user_profile.grade
+        if user_profile.batch:
+            filters["batch"] = user_profile.batch
+        if user_profile.current_enrollment and user_profile.current_enrollment.course:
+            filters["course"] = user_profile.current_enrollment.course
 
-    if content_details and content_details.get("type"):
-        filters["content_type"] = content_details["type"]
+    if content_details and content_details.type:
+        filters["content_type"] = content_details.type
 
     return filters or None
 
@@ -136,8 +137,8 @@ def _max_context_chars() -> int:
 def _synthesize_answer(
     query: str,
     context_text: str,
-    user_profile: Optional[Dict] = None,
-    history: Optional[List[Dict[str, str]]] = None
+    user_profile: Optional[UserProfile] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
      OPTIMIZATION: Use cached LLM invoke (Phase 1)
@@ -178,8 +179,8 @@ def retrieve_vector_search(
     query: str,
     k: int = 6,
     route_top_n: int = 5,
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
     refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -300,7 +301,7 @@ def retrieve_vector_search(
 def synthesize_vector_search_answer(
     query: str,
     vector_search_bundle: Dict[str, Any],
-    user_profile: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Generate the final answer from a previously prepared vector-search bundle."""
@@ -361,8 +362,8 @@ def answer_from_pinecone(
     query: str,
     k: int = 6,
     route_top_n: int = 5,
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
     refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:

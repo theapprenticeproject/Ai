@@ -7,7 +7,7 @@ Generates SQL queries with optional grade/batch filtering for personalized resul
 import json
 import re
 import time
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import frappe
 from loguru import logger
@@ -15,6 +15,7 @@ from loguru import logger
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.infra.sql_catalog import load_schema
+from tap_ai.models import UserProfile
 from tap_ai.utils.prompt_bank import get_system_message_for_context
 
 
@@ -27,16 +28,8 @@ def _sanitize_prompt_value(value: Any) -> str:
 
 # --- Schema Building ---
 
-def _build_enriched_schema_prompt(user_profile: Optional[Dict] = None) -> str:
-    """
-    Builds an enriched schema prompt with optional user context hints.
-    
-    Args:
-        user_profile: Optional user profile (can be None)
-    
-    Returns:
-        String containing schema description for LLM
-    """
+def _build_enriched_schema_prompt(user_profile: Optional[UserProfile] = None) -> str:
+    """Builds an enriched schema prompt with optional user context hints."""
     schema = load_schema()
     tables = schema.get("tables", {})
     allowed_joins = schema.get("allowed_joins", [])
@@ -88,25 +81,23 @@ def _build_enriched_schema_prompt(user_profile: Optional[Dict] = None) -> str:
 
         # Add user context hints if available
     if user_profile:
-        if user_profile.get('type'):
-            prompt_parts.append(f"- User Type: {_sanitize_prompt_value(user_profile['type'])}")
+        if user_profile.type:
+            prompt_parts.append(f"- User Type: {_sanitize_prompt_value(user_profile.type)}")
 
-        if user_profile.get('grade'):
-            grade = _sanitize_prompt_value(user_profile['grade'])
+        if user_profile.grade:
+            grade = _sanitize_prompt_value(user_profile.grade)
             prompt_parts.append(f"- Grade: {grade}")
             prompt_parts.append(f"  IMPORTANT: Filter results by grade = '{grade}' when querying student content")
 
-        if user_profile.get('batch'):
-            batch = _sanitize_prompt_value(user_profile['batch'])
+        if user_profile.batch:
+            batch = _sanitize_prompt_value(user_profile.batch)
             prompt_parts.append(f"- Batch: {batch}")
             prompt_parts.append(f"  Consider filtering by batch when relevant")
 
-        if user_profile.get('current_enrollment'):
-            enrollment = user_profile['current_enrollment']
-            if enrollment.get('course'):
-                course = _sanitize_prompt_value(enrollment['course'])
-                prompt_parts.append(f"- Current Course: {course}")
-                prompt_parts.append(f"  Prioritize content from this course")
+        if user_profile.current_enrollment and user_profile.current_enrollment.course:
+            course = _sanitize_prompt_value(user_profile.current_enrollment.course)
+            prompt_parts.append(f"- Current Course: {course}")
+            prompt_parts.append(f"  Prioritize content from this course")
     else:
         prompt_parts.append("\n\nUSER CONTEXT:")
         prompt_parts.append("- Anonymous query (no user-specific filtering)")
@@ -144,24 +135,13 @@ Example good queries:
 """
 
 
-def _generate_sql_query(  
-    query: str,  
-    schema_prompt: str,  
-    user_profile: Optional[Dict] = None,  
-    chat_history: Optional[List[Dict[str, str]]] = None  # Add chat_history parameter  
-) -> str:  
-    """  
-    Uses LLM to generate SQL from natural language query.  
-      
-    Args:  
-        query: User's natural language question  
-        schema_prompt: Enriched schema description  
-        user_profile: Optional user profile for context  
-        chat_history: Optional conversation history for context  
-      
-    Returns:  
-        Generated SQL query string  
-    """  
+def _generate_sql_query(
+    query: str,
+    schema_prompt: str,
+    user_profile: Optional[UserProfile] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    """Uses LLM to generate SQL from natural language query."""
     try:
         persona = get_system_message_for_context(user_profile=user_profile)
     except Exception:
@@ -185,18 +165,18 @@ def _generate_sql_query(
       
     # Add specific instructions for user context
     if user_profile:
-        if user_profile.get('grade'):
-            grade = _sanitize_prompt_value(user_profile['grade'])
+        if user_profile.grade:
+            grade = _sanitize_prompt_value(user_profile.grade)
             user_prompt_parts.append(
                 f"\nIMPORTANT: User is in Grade {grade}. "
                 f"Filter by grade = '{grade}' when querying student content like videos, quizzes, assignments."
             )
 
-        if user_profile.get('batch'):
-            batch = _sanitize_prompt_value(user_profile['batch'])
+        if user_profile.batch:
+            batch = _sanitize_prompt_value(user_profile.batch)
             user_prompt_parts.append(
                 f"User's batch is {batch}. Consider filtering by batch when relevant."
-            )  
+            )
     else:  
         user_prompt_parts.append(  
             "\nNote: This is an anonymous query. Return general content without user-specific filters."  
@@ -273,41 +253,18 @@ def _synthesize_answer_from_results(
     query: str,
     sql: str,
     results: List[Dict[str, Any]],
-    user_profile: Optional[Dict] = None
+    user_profile: Optional[UserProfile] = None,
 ) -> str:
-    """
-    Uses LLM to synthesize a natural language answer from SQL results.
-    
-    Args:
-        query: Original user question
-        sql: SQL query that was executed
-        results: Query results
-        user_profile: Optional user profile for personalization
-    
-    Returns:
-        Natural language answer
-    """
-    # Build system prompt with optional personalization
-    if user_profile and user_profile.get('name'):
-        system_prompt = f"""You are a helpful educational assistant.
-
-The user is {user_profile.get('name', 'a learner')}.
-"""
-        if user_profile.get('type'):
-            system_prompt += f"User type: {user_profile['type'].title()}. "
-        
-        if user_profile.get('grade'):
-            system_prompt += f"They are in Grade {user_profile['grade']}. "
-        
-        system_prompt += """
-Convert the SQL query results into a clear, friendly answer.
-Address the user by name when appropriate.
-"""
+    """Uses LLM to synthesize a natural language answer from SQL results."""
+    if user_profile and user_profile.name:
+        system_prompt = f"You are a helpful educational assistant.\n\nThe user is {user_profile.name}.\n"
+        if user_profile.type:
+            system_prompt += f"User type: {user_profile.type.title()}. "
+        if user_profile.grade:
+            system_prompt += f"They are in Grade {user_profile.grade}. "
+        system_prompt += "\nConvert the SQL query results into a clear, friendly answer.\nAddress the user by name when appropriate.\n"
     else:
-        system_prompt = """You are a helpful educational assistant.
-
-Convert the SQL query results into a clear, friendly answer.
-"""
+        system_prompt = "You are a helpful educational assistant.\n\nConvert the SQL query results into a clear, friendly answer.\n"
     
     system_prompt += """
 RULES:
@@ -350,9 +307,8 @@ Provide a helpful answer based on these results."""
         if not answer:
             answer = "I couldn't generate an answer."
         
-        # Add personalized greeting if user profile available
-        if user_profile and user_profile.get('name') and not answer.startswith("Hi"):
-            answer = f"Hi {user_profile['name']}! {answer}"
+        if user_profile and user_profile.name and not answer.startswith("Hi"):
+            answer = f"Hi {user_profile.name}! {answer}"
         
         return answer
         
@@ -363,31 +319,18 @@ Provide a helpful answer based on these results."""
 
 # --- Main Function ---
 
-def answer_from_sql(  
-    query: str,  
-    user_profile: Optional[Dict[str, Any]] = None,  
-    content_details: Optional[Dict[str, Any]] = None,  
-    chat_history: Optional[List[Dict[str, str]]] = None  
-) -> Dict[str, Any]: 
-    """
-    Main Text-to-SQL entry point with optional user context.
-    
-    Args:
-        query: Natural language question
-        user_profile: Optional user profile from DynamicConfig.get_user_profile()
-            Contains: name, batch, grade, enrollments, current_enrollment
-            Can be None for anonymous queries
-        content_details: Optional content details (not typically used for SQL)
-        chat_history: Optional conversation history (not typically used for SQL)
-    
-    Returns:
-        Dictionary with answer, SQL query, results, and metadata
-    """
+def answer_from_sql(
+    query: str,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[Any] = None,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Main Text-to-SQL entry point with optional user context."""
     start_time = time.time()
-    
+
     logger.info("Starting Text-to-SQL process")
     if user_profile:
-        logger.debug(f"User context: {user_profile.get('name')} | grade={user_profile.get('grade')} | batch={user_profile.get('batch')}")
+        logger.debug(f"User context: {user_profile.name} | grade={user_profile.grade} | batch={user_profile.batch}")
 
     try:
         schema_prompt = _build_enriched_schema_prompt(user_profile)
