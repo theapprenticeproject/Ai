@@ -71,7 +71,9 @@ Current deployment topology:
 | Vector DB | Pinecone |
 | Database | Remote PostgreSQL (`data.evalix.xyz`) |
 | Message Queue | RabbitMQ (Pika) |
-| Caching | Redis (LLM responses, KB entries, chat history) |
+| Caching | Redis (LLM responses, KB entries, chat history, routing profiles) |
+| Data validation | Pydantic v2 |
+| LLM orchestration | LangChain Core (`ChatPromptTemplate`, output parsers) |
 | Telegram bridge | Flask + python-telegram-bot |
 
 ---
@@ -195,11 +197,14 @@ This engine excels at conceptual queries by retrieving semantically relevant doc
 ```mermaid
 graph TD
     A[User Query + Chat History] --> B{LLM: Refine Query}
-    B --> C["1. Select DocTypes"]
-    C --> D["2. Semantic Search"]
-    D --> E["3. Fetch Full Text"]
-    E --> F[Rich Context Chunks]
+    B --> C["1. Embed Query"]
+    C --> D["2. Cosine Similarity → DocType Routing"]
+    D --> E["3. Parallel Pinecone Search across namespaces"]
+    E --> F["4. context_preview from metadata"]
+    F --> G[Rich Context Chunks]
 ```
+
+**DocType routing** uses pre-built embedding profiles stored in `DoctypeRoutingProfile` (Frappe doctype) rather than a per-query LLM call. The query embedding computed for Pinecone search is reused directly — zero extra latency. See [One-Time Setup](#-one-time-setup) for bootstrapping.
 
 ##### Chunking Strategy
 
@@ -268,7 +273,8 @@ graph TD
 ```
 tap_ai/
 ├── __init__.py                          # Package initialization
-├── hooks.py                             # Frappe hooks for app lifecycle
+├── hooks.py                             # Frappe hooks — Pinecone sync + profile refresh for all allowlisted DocTypes
+├── models.py                            # Shared Pydantic v2 models (UserProfile, Enrollment, ContentDetails)
 ├── modules.txt                          # Module declaration
 ├── patches.txt                          # Database migration patches
 │
@@ -287,16 +293,17 @@ tap_ai/
 │   ├── __init__.py
 │   ├── rag/                             # Vector RAG engine
 │   │   ├── rag_answerer.py              # RAG answer synthesis (query refine → search → synthesize)
-│   │   └── pinecone_store.py            # Pinecone vector store (upsert, search, auto-sync hooks)
+│   │   └── pinecone_store.py            # Pinecone vector store (upsert, parallel search, auto-sync hooks)
 │   ├── sql/                             # Text-to-SQL engine
 │   │   ├── sql_answerer.py              # SQL generation → execution → answer synthesis
-│   │   └── doctype_selector.py          # LLM-based DocType selector for SQL routing
+│   │   └── doctype_selector.py          # LLM-based DocType selector (fallback when profiles unavailable)
 │   ├── kb/                              # Knowledge Bank engine
 │   │   ├── direct_response_bank.py      # Exact-match KB lookup and Redis cache
 │   │   └── kb_llm_router.py             # LLM fallback when no exact KB match
 │   └── routing/                         # Router and fast-path patterns
 │       ├── router.py                    # Intelligent router (brain of system)
-│       └── routing_patterns.py          # Regex fast-path patterns (zero-LLM routing)
+│       ├── routing_patterns.py          # Regex fast-path patterns (zero-LLM routing)
+│       └── doctype_profiler.py          # Embedding-based DocType routing profiles (generate, store, route)
 │
 ├── workers/                             # RabbitMQ Background Workers
 │   ├── llm_worker.py                    # Main LLM routing worker
@@ -317,12 +324,12 @@ tap_ai/
 │
 ├── utils/                               # Utility functions
 │   ├── __init__.py
-│   ├── dynamic_config.py                # Dynamic config for TAP LMS integration
+│   ├── dynamic_config.py                # Dynamic config for TAP LMS integration (returns Pydantic models)
 │   ├── remote_db.py                     # Remote PostgreSQL connection pool and query helpers
 │   ├── mq.py                            # RabbitMQ publisher utility
 │   ├── prompt_bank.py                   # Prompt Suggestion loader and system-message renderer
 │   ├── prompt_suggestions.json          # Default prompt suggestions (fallback when no DocType)
-│   ├── query_refiner.py                 # Rewrites follow-up queries into standalone questions
+│   ├── query_refiner.py                 # Rewrites follow-up queries into standalone questions (LCEL chain)
 │   └── ratelimit.py                     # API rate limiting utility
 │
 ├── config/                              # Frappe app configuration
@@ -336,7 +343,9 @@ tap_ai/
 │   └── pages/
 │
 └── tap_ai/                              # Frappe DocTypes and dashboards
-    ├── doctype/                         # Frappe DocType definitions (TAP Response Knowledge, etc.)
+    ├── doctype/
+    │   ├── doctype_routing_profile/     # Persistent store for DocType embedding profiles
+    │   └── ...                          # TAP Response Knowledge, AI Knowledge Base, etc.
     ├── dashboard_chart/                 # Analytics dashboard chart definitions
     ├── number_card/                     # Analytics dashboard number card definitions
     └── tap_ai_dashboard/                # TAP AI Analytics dashboard configuration
@@ -375,7 +384,9 @@ All runtime dependencies are in `requirements.txt`. Frappe is installed separate
 |---|---|---|
 | `pika` | latest | RabbitMQ client for async worker messaging |
 | `openai` | ≥1.40.0 | GPT routing, Whisper STT, TTS synthesis |
+| `langchain-core` | ≥0.3.0 | `ChatPromptTemplate`, `StrOutputParser`, `JsonOutputParser`, `MessagesPlaceholder` |
 | `langchain-openai` | ≥0.1.17 | `ChatOpenAI` and `OpenAIEmbeddings` wrappers |
+| `pydantic` | ≥2.0 | Shared input/output models (`UserProfile`, `Enrollment`, `ContentDetails`) |
 | `pinecone` | latest | Vector database client for RAG retrieval |
 | `psycopg2-binary` | latest | PostgreSQL driver for remote DB access |
 | `requests` | latest | HTTP client used by STT worker to download audio |
@@ -480,7 +491,8 @@ Edit your site's `site_config.json` file and add:
 | Key | Type | Purpose | Default |
 |-----|------|---------|---------|
 | `openai_api_key` | string | OpenAI API authentication | Required |
-| `primary_llm_model` | string | Primary LLM for routing | `gpt-4o-mini` |
+| `primary_llm_model` | string | Primary LLM for routing and SQL | `gpt-4o-mini` |
+| `profiler_summary_model` | string | LLM used for DocType profile summary generation (one-time) | `gpt-4o` |
 | `embedding_model` | string | Model for embeddings | `text-embedding-3-small` |
 | `pinecone_api_key` | string | Pinecone authentication | Required |
 | `pinecone_index` | string | Pinecone index name | `tap-ai-byo` |
@@ -491,6 +503,9 @@ Edit your site's `site_config.json` file and add:
 | `max_context_length` | int | Max LLM context tokens | `2048` |
 | `vector_search_k` | int | Top-K vectors for RAG | `5` |
 | `max_response_tokens` | int | Max response tokens | `500` |
+| `rag_max_context_hits` | int | Max Pinecone hits used for context building | `6` |
+| `rag_synthesis_model` | string | LLM model for RAG answer synthesis | `gpt-4o-mini` |
+| `rag_synthesis_max_tokens` | int | Max tokens for RAG answer | `500` |
 
 ### Step 2: Environment Variables (Alternative)
 
@@ -526,6 +541,29 @@ bench execute tap_ai.infra.pinecone_index.cli_ensure_index
 
 ```bash
 bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
+```
+
+### Step 4: Bootstrap DocType Routing Profiles
+
+This generates a topic-aware embedding profile for each allowlisted DocType. The profiles are used to route queries to the right Pinecone namespaces without an LLM call at query time.
+
+```bash
+bench execute tap_ai.services.routing.doctype_profiler.generate_all_profiles
+```
+
+> **Local development only:** if running locally without a direct connection to the remote PostgreSQL, ensure the DB tunnel is open in a separate terminal before running this command. On the production server (`ai.evalix.xyz`) the remote DB is directly reachable and no tunnel is needed.
+
+This is a **one-time operation**. After that, the `doc_events` hook automatically refreshes any DocType's profile in the background whenever a record is inserted or updated. Profiles are stored in the `Doctype Routing Profile` Frappe doctype (persistent) and Redis (7-day TTL cache). A Redis flush does **not** trigger regeneration — profiles reload from the Frappe doctype in ~50ms.
+
+**Re-generate a single DocType profile** (e.g. after a schema change):
+```bash
+bench execute tap_ai.services.routing.doctype_profiler.generate_doctype_profile \
+  --kwargs "{'doctype': 'VideoClass'}"
+```
+
+**Control which model generates summaries** (default: `gpt-4o`):
+```json
+"profiler_summary_model": "gpt-4o"
 ```
 
 ### Pinecone Maintenance Commands
@@ -987,7 +1025,7 @@ This project is licensed under the terms specified in `license.txt`.
 
 ---
 
-**Last Updated:** 2026-05-29  
-**Version:** 2.0.0  
-**Author:** Anish Aman  
+**Last Updated:** 2026-05-30
+**Version:** 2.1.0
+**Author:** Anish Aman
 **Repository:** theapprenticeproject/Ai
