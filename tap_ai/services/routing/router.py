@@ -21,12 +21,16 @@ from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.models import ContentDetails, UserProfile
 from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.services.sql.sql_answerer import answer_from_sql
 from tap_ai.services.rag.rag_answerer import answer_from_pinecone
 from tap_ai.services.kb.direct_response_bank import lookup_exact_direct_response
 from tap_ai.services.kb.kb_llm_router import verify_and_respond as verify_kb_and_respond
-from tap_ai.services.routing.routing_patterns import match_fast_kb, match_fast_kb_unconditional, match_fast_sql
+from tap_ai.services.routing.routing_patterns import (
+    match_fast_kb, match_fast_kb_unconditional, match_fast_sql,
+    is_quiz_context, is_quiz_answer,
+)
 
 # ======================================================
 # ROUTER PROMPT
@@ -160,8 +164,8 @@ def _with_meta(
 
 def process_query(
     query: str,
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
     context: Optional[Dict[str, Any]] = None,
     voice_mode: bool = False,
@@ -175,19 +179,17 @@ def process_query(
     # -------- Build user context string (for routing) --------
     user_context = None
     if user_profile:
-        parts = [f"User: {user_profile.get('name', 'Unknown')}"]
-        if user_profile.get("grade"):
-            parts.append(f"Grade: {user_profile['grade']}")
-        if user_profile.get("batch"):
-            parts.append(f"Batch: {user_profile['batch']}")
-        if user_profile.get("current_enrollment"):
-            ce = user_profile["current_enrollment"]
-            if ce.get("course"):
-                parts.append(f"Course: {ce['course']}")
+        parts = [f"User: {user_profile.name or 'Unknown'}"]
+        if user_profile.grade:
+            parts.append(f"Grade: {user_profile.grade}")
+        if user_profile.batch:
+            parts.append(f"Batch: {user_profile.batch}")
+        if user_profile.current_enrollment and user_profile.current_enrollment.course:
+            parts.append(f"Course: {user_profile.current_enrollment.course}")
         user_context = " | ".join(parts)
 
     if content_details:
-        content_str = f"Content: {content_details.get('title', 'Unknown')}"
+        content_str = f"Content: {content_details.title or 'Unknown'}"
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
     # -------- Query refinement (skip if already refined or unconditional KB) --------
@@ -208,10 +210,17 @@ def process_query(
     # -------- Choose tool (routing uses refined query) --------
     routing_ms = 0
     if primary_tool is None:
-        routing_start = time.perf_counter()
-        primary_tool = choose_tool(refined_query, user_context)
-        routing_ms = int((time.perf_counter() - routing_start) * 1000)
-        logger.info(f"Selected primary tool: {primary_tool}")
+        # Hard bypass: quiz answers must never land in the knowledge bank.
+        # KB has short strings (single letters) as alternate queries which
+        # would intercept option answers like "A" before context is checked.
+        if is_quiz_context(chat_history) and is_quiz_answer(query):
+            primary_tool = "vector_search"
+            logger.debug("Quiz answer detected — bypassing KB, forcing vector_search")
+        else:
+            routing_start = time.perf_counter()
+            primary_tool = choose_tool(refined_query, user_context)
+            routing_ms = int((time.perf_counter() - routing_start) * 1000)
+            logger.info(f"Selected primary tool: {primary_tool}")
 
     fallback_used = False
     result = {}

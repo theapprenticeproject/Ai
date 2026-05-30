@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 import frappe
 from loguru import logger
 
+from tap_ai.models import UserProfile
+
 
 KB_DOCTYPE = "TAP Response Knowledge"
 KB_CACHE_KEY = "tap_ai:direct_response_knowledge:v1"
@@ -175,15 +177,15 @@ def invalidate_kb_cache() -> bool:
 
 
 
-def _render_response(response: str, user_profile: Optional[Dict[str, Any]] = None) -> str:
+def _render_response(response: str, user_profile: Optional[UserProfile] = None) -> str:
 	if not response:
 		return ""
 
 	placeholders = {
-		"student_name": str((user_profile or {}).get("name") or "").strip(),
-		"name": str((user_profile or {}).get("name") or "").strip(),
-		"grade": str((user_profile or {}).get("grade") or "").strip(),
-		"batch": str((user_profile or {}).get("batch") or "").strip(),
+		"student_name": str(user_profile.name or "").strip() if user_profile else "",
+		"name": str(user_profile.name or "").strip() if user_profile else "",
+		"grade": str(user_profile.grade or "").strip() if user_profile else "",
+		"batch": str(user_profile.batch or "").strip() if user_profile else "",
 	}
 
 	def replace(match: re.Match[str]) -> str:
@@ -196,7 +198,7 @@ def _render_response(response: str, user_profile: Optional[Dict[str, Any]] = Non
 
 def lookup_exact_direct_response(
 	query: str,
-	user_profile: Optional[Dict[str, Any]] = None,
+	user_profile: Optional[UserProfile] = None,
 ) -> Optional[Dict[str, Any]]:
 	"""
 	STAGE 1: EXACT MATCH LOOKUP (FAST PATH)

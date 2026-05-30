@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 import frappe
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.models import UserProfile
 from tap_ai.services.kb.direct_response_bank import (
     get_direct_response_entries,
     _render_response,
@@ -53,7 +54,7 @@ Rules:
 
 def verify_and_respond(
     query: str,
-    user_profile: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """

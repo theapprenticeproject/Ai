@@ -16,6 +16,7 @@ from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.services.routing.routing_patterns import is_quiz_context, is_quiz_answer
 
 
 REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand.
@@ -23,6 +24,7 @@ REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the f
 - If already standalone, return as is
 - Incorporate relevant context from history
 - Do NOT answer the question
+- If the history shows a quiz question was just asked (with A), B), C) options) and the user's reply is a single letter or option text, expand it to: "Is [option text] the correct answer to the quiz question: [question]?"
 
 Return ONLY the refined question.
 """
@@ -58,6 +60,10 @@ def _should_refine_query(query: str, history: List[Dict[str, str]]) -> bool:
         return True
 
     if q.startswith(("and ", "then ", "also ", "so ")):
+        return True
+
+    # Force refinement when user is answering a quiz question
+    if is_quiz_context(history) and is_quiz_answer(query):
         return True
 
     return False

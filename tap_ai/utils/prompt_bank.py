@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 
 import frappe
 
+from tap_ai.models import ContentDetails, UserProfile
+
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "prompt_suggestions.json")
 CACHE_KEY = "tap_ai:prompt_suggestions:v1"
 
@@ -124,8 +126,8 @@ def render_system_prompt(
 
 def get_system_message_for_context(
     prompt_id: str = "default",
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
 ) -> str:
     student_name = None
     class_name = None
@@ -135,13 +137,13 @@ def get_system_message_for_context(
     topic_name = None
 
     if user_profile:
-        student_name = user_profile.get("name")
-        class_name = str(user_profile.get("grade") or user_profile.get("class") or "")
-        language = user_profile.get("language")
+        student_name = user_profile.name
+        class_name = str(user_profile.grade or "")
+        language = user_profile.language
 
     if content_details:
-        topic_name = content_details.get("title")
-        current_step = content_details.get("current_step") or content_details.get("step")
+        topic_name = content_details.title
+        current_step = content_details.current_step or content_details.step
 
     return render_system_prompt(
         prompt_id=prompt_id,

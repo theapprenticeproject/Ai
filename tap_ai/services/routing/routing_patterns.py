@@ -154,6 +154,45 @@ FAST_KB_UNCONDITIONAL_PATTERNS = re.compile(
 )
 
 
+import re as _re
+
+# Letter options: A) B) C) (with DOTALL so newlines between options are fine)
+_QUIZ_LETTER_OPTIONS_RE = _re.compile(r'\bA\).*\bB\).*\bC\)', _re.S)
+# Numbered options: "1. ..." "2. ..." "3. ..." or "1) ..." "2) ..." "3) ..."
+_QUIZ_NUMBER_OPTIONS_RE = _re.compile(r'\b1[.)]\s*.+\b2[.)]\s*.+\b3[.)]', _re.S)
+
+# Bare letter answer: "A", "b", "C.", "d)"
+_QUIZ_BARE_LETTER_RE = _re.compile(r'^\s*[A-Da-d]\s*[).:,]?\s*$')
+# Bare digit answer: "1", "2", "3", "4"
+_QUIZ_BARE_DIGIT_RE = _re.compile(r'^\s*[1-4]\s*[).:,]?\s*$')
+# "Option A" or "Option 1" style
+_QUIZ_OPTION_PREFIX_RE = _re.compile(r'^[Oo]ption\s+[A-Da-d1-4]\b')
+
+
+def is_quiz_context(history: list) -> bool:
+    """True if the most recent assistant message contained quiz options (letter or numbered)."""
+    if not history:
+        return False
+    last = next((m for m in reversed(history) if m.get("role") == "assistant"), None)
+    if not last:
+        return False
+    content = last.get("content", "")
+    return bool(
+        _QUIZ_LETTER_OPTIONS_RE.search(content) or
+        _QUIZ_NUMBER_OPTIONS_RE.search(content)
+    )
+
+
+def is_quiz_answer(query: str) -> bool:
+    """True if the query looks like a quiz answer (bare letter, bare digit, or 'Option X')."""
+    q = (query or "").strip()
+    return bool(
+        _QUIZ_BARE_LETTER_RE.match(q) or
+        _QUIZ_BARE_DIGIT_RE.match(q) or
+        _QUIZ_OPTION_PREFIX_RE.match(q)
+    )
+
+
 def match_fast_kb(query: str) -> bool:
     """Check if query matches the full knowledge_bank fast patterns (use on refined query)."""
     q = (query or "").strip()

@@ -3,7 +3,7 @@ Vector RAG Engine for TAP AI
 
 Conversational query refinement
 Pinecone routing with optional grade/batch/course filtering
-Robust context construction from DB (batched + char budget)
+Context construction from Pinecone metadata (context_preview)
 Personalized answer synthesis
 Rich metadata for debugging & observability
 DynamicConfig compatible
@@ -11,20 +11,17 @@ DynamicConfig compatible
 
 import json
 import time
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import frappe
 from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.models import ContentDetails, UserProfile
 from tap_ai.utils.prompt_bank import get_system_message_for_context
 from tap_ai.utils.query_refiner import refine_query_with_history
-from tap_ai.services.rag.pinecone_store import (
-    search_auto_namespaces,
-    get_db_columns_for_doctype,
-    _record_to_text,
-)
+from tap_ai.services.rag.pinecone_store import search_auto_namespaces
 
 
 def _to_int(value: Any, default: int) -> int:
@@ -46,21 +43,21 @@ def _to_float(value: Any, default: float) -> float:
 # ======================================================
 
 def _build_metadata_filter(
-    user_profile: Optional[Dict] = None,
-    content_details: Optional[Dict] = None
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
 ) -> Optional[Dict[str, Any]]:
     filters = {}
 
     if user_profile:
-        if user_profile.get("grade"):
-            filters["grade"] = user_profile["grade"]
-        if user_profile.get("batch"):
-            filters["batch"] = user_profile["batch"]
-        if user_profile.get("current_enrollment", {}).get("course"):
-            filters["course"] = user_profile["current_enrollment"]["course"]
+        if user_profile.grade:
+            filters["grade"] = user_profile.grade
+        if user_profile.batch:
+            filters["batch"] = user_profile.batch
+        if user_profile.current_enrollment and user_profile.current_enrollment.course:
+            filters["course"] = user_profile.current_enrollment.course
 
-    if content_details and content_details.get("type"):
-        filters["content_type"] = content_details["type"]
+    if content_details and content_details.type:
+        filters["content_type"] = content_details.type
 
     return filters or None
 
@@ -70,7 +67,7 @@ def _build_metadata_filter(
 # ======================================================
 
 def _max_context_hits() -> int:
-    """Cap DB hydration to top-N vector hits to reduce latency."""
+    """Cap context building to top-N vector hits."""
     try:
         configured = int(get_config("rag_max_context_hits") or 6)
         return max(1, min(configured, 6))
@@ -87,172 +84,42 @@ def _effective_k(k: int) -> int:
     return max(1, min(parsed, 6))
 
 
-def _context_fields_for_doctype(doctype: str) -> List[str]:
-    """Fetch a compact field list for context hydration, with cache."""
-    cache_key = f"rag_context_fields:{doctype}"
-    cached = frappe.cache().get(cache_key)
-    if cached:
-        if isinstance(cached, bytes):
-            cached = cached.decode("utf-8", errors="ignore")
-        try:
-            fields = json.loads(cached)
-            if isinstance(fields, list) and fields:
-                return fields
-        except Exception:
-            pass
-
-    columns = get_db_columns_for_doctype(doctype) or []
-    columns_set = set(columns)
-
-    preferred = [
-        "name", "title", "subject", "topic", "description", "content",
-        "instructions", "learning_objective", "evaluation_points", "rubric",
-        "objective", "summary", "course", "grade", "batch", "modified",
-    ]
-    selected = [f for f in preferred if f in columns_set]
-
-    # Keep at most 15 columns for context hydration; fallback to first columns.
-    if not selected:
-        selected = ["name"] + [c for c in columns if c != "name"][:14]
-
-    # Ensure unique, stable order.
-    seen = set()
-    final_fields = []
-    for f in selected:
-        if f not in seen:
-            seen.add(f)
-            final_fields.append(f)
-
-    frappe.cache().set(cache_key, json.dumps(final_fields), ex=3600)
-    return final_fields
-
-
 def _build_context_from_hits(
     hits: List[Dict[str, Any]],
     max_chars: int = 12000
 ) -> Dict[str, Any]:
-    """
-     OPTIMIZATION: Batch DB queries by doctype (Phase 2)
-    Instead of: 15 hits = 15 DB queries
-    Now does: 2-3 doctypes = 2-3 batch queries
-    """
+    """Build context text from Pinecone hit metadata (context_preview is always stored at upsert time)."""
     context_chunks: List[str] = []
     sources: List[Dict[str, Any]] = []
     used_chars = 0
-    metadata_hits_used = 0
-    db_queries = 0
-    meta_cache: Dict[str, Any] = {}
 
-    # Hydrate context only for top-N hits; deeper hits are often low signal.
-    top_hits = (hits or [])[: _max_context_hits()]
-    
-    # Group hits by doctype
-    hits_by_doctype: Dict[str, List] = {}
-    for hit in top_hits:
+    for hit in (hits or [])[:_max_context_hits()]:
+        if used_chars >= max_chars:
+            break
+
         meta = hit.get("metadata") or {}
         doctype = meta.get("doctype")
         record_ids = meta.get("record_ids") or []
-        
-        if not doctype or not record_ids:
+        preview = (meta.get("context_preview") or "").strip()
+
+        if not doctype or not record_ids or not preview:
             continue
-        
-        if doctype not in hits_by_doctype:
-            hits_by_doctype[doctype] = []
-        
-        hits_by_doctype[doctype].append((hit, record_ids))
-    
-    # Fast path: if Pinecone metadata already carries a preview chunk, avoid DB hit.
-    pending_hits_by_doctype: Dict[str, List] = {}
-    for doctype, hits_group in hits_by_doctype.items():
-        for hit, record_ids in hits_group:
-            if used_chars >= max_chars:
-                break
 
-            meta = hit.get("metadata") or {}
-            preview = (meta.get("context_preview") or "").strip()
-            if preview:
-                chunk = f"DocType: {doctype}\nID: {record_ids[0]}\n{preview}"
-                if used_chars + len(chunk) > max_chars:
-                    continue
-                context_chunks.append(chunk)
-                metadata_hits_used += 1
-                sources.append({
-                    "doctype": doctype,
-                    "id": record_ids[0],
-                    "score": hit.get("score"),
-                })
-                used_chars += len(chunk)
-                continue
+        chunk = f"DocType: {doctype}\nID: {record_ids[0]}\n{preview}"
+        if used_chars + len(chunk) > max_chars:
+            continue
 
-            pending_hits_by_doctype.setdefault(doctype, []).append((hit, record_ids))
+        context_chunks.append(chunk)
+        sources.append({"doctype": doctype, "id": record_ids[0], "score": hit.get("score")})
+        used_chars += len(chunk)
 
-    # Single batch query per doctype for misses
-    from tap_ai.utils.remote_db import get_remote_all
-    
-    for doctype, hits_group in pending_hits_by_doctype.items():
-        if used_chars >= max_chars:
-            break
-        
-        try:
-            # Collect all unique record IDs for this doctype
-            all_record_ids = []
-            for hit, record_ids in hits_group:
-                all_record_ids.extend(record_ids)
-            
-            all_record_ids = list(set(all_record_ids))  # Deduplicate
-            
-            if not all_record_ids:
-                continue
-            
-            # ONE query per doctype instead of ONE per hit
-            fields = _context_fields_for_doctype(doctype)
-            rows = get_remote_all(
-                doctype,
-                fields=fields,
-                filters={"name": ["in", all_record_ids]},
-            )
-            db_queries += 1
-            
-            # Map rows by name for quick lookup
-            rows_dict = {row.get("name"): row for row in rows}
-            
-            # Build context from batched results
-            for hit, record_ids in hits_group:
-                if used_chars >= max_chars:
-                    break
-                
-                for record_id in record_ids:
-                    if used_chars >= max_chars:
-                        break
-                    
-                    if record_id not in rows_dict:
-                        continue
-                    
-                    row = rows_dict[record_id]
-                    chunk = _record_to_text(doctype, row, meta_cache=meta_cache)
-                    
-                    if used_chars + len(chunk) > max_chars:
-                        break
-                    
-                    context_chunks.append(chunk)
-                    sources.append({
-                        "doctype": doctype,
-                        "id": row.get("name"),
-                        "score": hit.get("score"),
-                    })
-                    used_chars += len(chunk)
-        
-        except Exception as e:
-            frappe.log_error(f"Context build failed for {doctype}: {e}")
-
+    top_hits = (hits or [])[:_max_context_hits()]
     return {
         "context_text": "\n\n---\n\n".join(context_chunks),
         "sources": sources,
         "stats": {
             "total_hits_in": len(hits or []),
             "top_hits_used": len(top_hits),
-            "metadata_hits_used": metadata_hits_used,
-            "db_queries": db_queries,
             "context_chars": used_chars,
         },
     }
@@ -270,8 +137,8 @@ def _max_context_chars() -> int:
 def _synthesize_answer(
     query: str,
     context_text: str,
-    user_profile: Optional[Dict] = None,
-    history: Optional[List[Dict[str, str]]] = None
+    user_profile: Optional[UserProfile] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
      OPTIMIZATION: Use cached LLM invoke (Phase 1)
@@ -312,8 +179,8 @@ def retrieve_vector_search(
     query: str,
     k: int = 6,
     route_top_n: int = 5,
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
     refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -434,7 +301,7 @@ def retrieve_vector_search(
 def synthesize_vector_search_answer(
     query: str,
     vector_search_bundle: Dict[str, Any],
-    user_profile: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Generate the final answer from a previously prepared vector-search bundle."""
@@ -495,8 +362,8 @@ def answer_from_pinecone(
     query: str,
     k: int = 6,
     route_top_n: int = 5,
-    user_profile: Optional[Dict[str, Any]] = None,
-    content_details: Optional[Dict[str, Any]] = None,
+    user_profile: Optional[UserProfile] = None,
+    content_details: Optional[ContentDetails] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
     refined_query: Optional[str] = None,
 ) -> Dict[str, Any]:
