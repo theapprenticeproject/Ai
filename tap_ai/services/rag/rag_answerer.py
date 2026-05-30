@@ -14,6 +14,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 import frappe
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from loguru import logger
 
 from tap_ai.infra.config import get_config
@@ -134,6 +136,13 @@ def _max_context_chars() -> int:
 # ANSWER SYNTHESIS
 # ======================================================
 
+_SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "{system_prompt}"),
+    MessagesPlaceholder(variable_name="history", optional=True),
+    ("human", "CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"),
+])
+
+
 def _synthesize_answer(
     query: str,
     context_text: str,
@@ -154,17 +163,22 @@ def _synthesize_answer(
     except Exception:
         persona = ""
 
-    # TAP Buddy persona is the sole system message; fall back to a minimal prompt.
     system_prompt = persona or "You are a helpful educational AI assistant."
 
-    messages = [["system", system_prompt]]
-    for msg in history[-synthesis_history_turns:]:
-        messages.append([msg["role"], msg["content"]])
-    messages.append(["user", f"CONTEXT:\n{context_text}\n\nAnswer this question:\n{query}"])
+    history_msgs = [
+        HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+        for m in history[-synthesis_history_turns:]
+    ]
+    messages = _SYNTHESIS_PROMPT.format_messages(
+        system_prompt=system_prompt,
+        history=history_msgs,
+        context_text=context_text,
+        query=query,
+    )
 
     try:
         answer = llm_invoke_cached(
-            messages,
+            [(m.type, m.content) for m in messages],
             model=synthesis_model,
             temperature=synthesis_temperature,
             max_tokens=synthesis_max_tokens,
