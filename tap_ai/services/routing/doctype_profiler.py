@@ -150,9 +150,10 @@ def _generate_summary(doctype: str, schema_text: str, titles: List[str]) -> str:
         "- Do NOT just list field names. Ground every claim in the actual record data shown."
     )
 
+    model = get_config("profiler_summary_model") or "gpt-4o"
     return llm_invoke_cached(
         [("system", _PROFILE_SYSTEM), ("user", user_msg)],
-        model="gpt-4o-mini",
+        model=model,
         temperature=0.0,
         max_tokens=350,
         cache_ttl=86400 * 7,
