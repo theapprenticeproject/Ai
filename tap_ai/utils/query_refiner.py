@@ -12,14 +12,16 @@ from __future__ import annotations
 from typing import Dict, List
 
 import frappe
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 
 from tap_ai.infra.config import get_config
-from tap_ai.infra.llm_client import llm_invoke_cached
+from tap_ai.infra.llm_client import LLMClient
 from tap_ai.services.routing.routing_patterns import is_quiz_context, is_quiz_answer
 
 
-REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand.
+_REFINER_SYSTEM = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand.
 
 - If already standalone, return as is
 - Incorporate relevant context from history
@@ -28,6 +30,11 @@ REFINER_PROMPT = """Given a chat history and a follow-up question, rewrite the f
 
 Return ONLY the refined question.
 """
+
+_REFINE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", _REFINER_SYSTEM),
+    ("human", "CHAT HISTORY:\n{history}\n\nFOLLOW-UP QUESTION:\n{query}\n\nREFINED STANDALONE QUESTION:"),
+])
 
 _FOLLOW_UP_MARKERS = (
     "it", "this", "that", "these", "those", "they", "them", "he", "she", "yes",
@@ -89,19 +96,11 @@ def refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:
         for msg in recent_history
     )
 
-    prompt = (
-        f"CHAT HISTORY:\n{formatted_history}\n\n"
-        f"FOLLOW-UP QUESTION:\n{query}\n\n"
-        f"REFINED STANDALONE QUESTION:"
-    )
-
     try:
-        refined = llm_invoke_cached(
-            [("system", REFINER_PROMPT), ("user", prompt)],
-            model="gpt-4o-mini",
-            temperature=0.0,
-            max_tokens=120,
-        )
+        chain = _REFINE_PROMPT | LLMClient.get_client(
+            model="gpt-4o-mini", temperature=0.0, max_tokens=120
+        ) | StrOutputParser()
+        refined = chain.invoke({"history": formatted_history, "query": query})
         logger.debug(f"Refined query: {refined}")
         return refined
     except Exception as e:

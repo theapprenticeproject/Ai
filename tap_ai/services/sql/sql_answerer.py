@@ -10,6 +10,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import frappe
+from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 
 from tap_ai.infra.config import get_config
@@ -135,6 +136,18 @@ Example good queries:
 """
 
 
+_SQL_GEN_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", SQL_GENERATION_PROMPT),
+    ("system", "{persona}"),
+    ("human", "{user_prompt}"),
+])
+
+_SQL_SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "{system_prompt}"),
+    ("human", "{user_prompt}"),
+])
+
+
 def _generate_sql_query(
     query: str,
     schema_prompt: str,
@@ -184,14 +197,13 @@ def _generate_sql_query(
       
     user_prompt = "\n".join(user_prompt_parts)  
       
-    try:  
-        messages = [("system", SQL_GENERATION_PROMPT)]
-        if persona:
-            messages.append(("system", persona))
-        messages.append(("user", user_prompt))
+    try:
+        messages = _SQL_GEN_PROMPT.format_messages(persona=persona or "", user_prompt=user_prompt)
+        # Drop the persona system message when it's empty
+        messages = [m for m in messages if m.content.strip()]
 
         sql = llm_invoke_cached(
-            messages,
+            [(m.type, m.content) for m in messages],
             model=get_config("primary_llm_model") or "gpt-4o-mini",
             temperature=0.0,
             max_tokens=800,
@@ -295,11 +307,11 @@ RESULTS ({len(results)} total):
 Provide a helpful answer based on these results."""
     
     try:
+        messages = _SQL_SYNTHESIS_PROMPT.format_messages(
+            system_prompt=system_prompt, user_prompt=user_prompt
+        )
         answer = llm_invoke_cached(
-            [
-                ("system", system_prompt),
-                ("user", user_prompt),
-            ],
+            [(m.type, m.content) for m in messages],
             model=get_config("primary_llm_model") or "gpt-4o-mini",
             temperature=0.2,
             max_tokens=800,

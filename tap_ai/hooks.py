@@ -49,8 +49,14 @@ def _register_pinecone_sync_hooks():
             for doctype in pinecone_sync_doctypes:
                 doc_events.setdefault(doctype, {})
                 doc_events[doctype].update({
-                    "after_insert": "tap_ai.services.rag.pinecone_store.sync_to_pinecone_on_insert",
-                    "after_update": "tap_ai.services.rag.pinecone_store.sync_to_pinecone_on_update",
+                    "after_insert": [
+                        "tap_ai.services.rag.pinecone_store.sync_to_pinecone_on_insert",
+                        "tap_ai.services.routing.doctype_profiler.queue_profile_refresh",
+                    ],
+                    "after_update": [
+                        "tap_ai.services.rag.pinecone_store.sync_to_pinecone_on_update",
+                        "tap_ai.services.routing.doctype_profiler.queue_profile_refresh",
+                    ],
                 })
             
             print(f"[tap_ai] Registered Pinecone sync hooks for {len(pinecone_sync_doctypes)} doctypes")

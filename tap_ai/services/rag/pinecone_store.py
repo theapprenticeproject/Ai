@@ -480,55 +480,55 @@ def upsert_all(
 # SEARCH (THIS IS THE IMPORTANT PART)
 # -------------------------------------------------------------------
 
-def search_auto_namespaces(  
-    q: str,  
-    k: int = 6,  
-    route_top_n: int = 4,  
-    filters: Optional[Dict[str, Any]] = None,  
+def search_auto_namespaces(
+    q: str,
+    k: int = 6,
+    route_top_n: int = 4,
+    filters: Optional[Dict[str, Any]] = None,
     use_parallel: bool = True,
-) -> Dict[str, Any]:  
+) -> Dict[str, Any]:
     """
-     OPTIMIZATION: Parallel Pinecone queries with LLM-routed doctypes (Phase 2)
-    LLM routing is cached (5min TTL), reducing redundant calls.
-    Instead of: 4 doctypes = 4 sequential queries (800ms)
-    Now does: 4 routed doctypes in 1 parallel batch (200ms)
-    """
-    idx = _index()  
-  
-    # 1. Route doctypes using LLM (cached; only one LLM call on cache miss)
-    doctypes = pick_doctypes(q, top_n=route_top_n) or []  
-  
-    # 2. Enforce exclusion list  
-    doctypes = _filter_excluded(doctypes)  
-  
-    # 3. Filter out system DocTypes for content queries  
-    system_doctypes = {"AI Knowledge Base"}  
-    content_doctypes = [dt for dt in doctypes if dt not in system_doctypes]  
-      
-    # Only use content doctypes if we found any  
-    if content_doctypes:  
-        doctypes = content_doctypes  
-  
-    # 4. Fallback to content DocTypes if routing failed  
-    if not doctypes:  
-        schema = load_schema()  
-        all_allowed = [  
-            t.replace("tab", "")  
-            for t in schema.get("allowlist", [])  
-        ]  
-        # Prefer content DocTypes in fallback  
-        content_priority = [  
-            "VideoClass", "Course", "LearningObjective", "NoteContent",  
-            "Quiz", "Assignment", "LearningUnit"  
-        ]  
-        doctypes = [dt for dt in content_priority if dt in all_allowed][:route_top_n]  
-          
-        # If no content DocTypes found, use any allowed  
-        if not doctypes:  
-            doctypes = all_allowed[:route_top_n]  
+    Parallel Pinecone queries with embedding-based namespace routing.
 
-    #  OPTIMIZATION: Use cached embedding (Phase 1)
+    Routing priority:
+      1. Cosine similarity against pre-built DocType profile vectors (sub-ms, no LLM)
+      2. LLM-based pick_doctypes fallback (used only until profiles are bootstrapped)
+      3. Static content DocType list (last resort)
+    """
+    idx = _index()
+
+    # 1. Embed query first — reused for both routing and Pinecone search
     qvec = embed_query_cached(q)
+
+    # 2. Route via cosine similarity against DocType profile vectors (zero extra LLM call)
+    from tap_ai.services.routing.doctype_profiler import route_by_similarity
+    doctypes = route_by_similarity(qvec, top_n=route_top_n)
+
+    # 3. Fall back to LLM routing if profiles not yet bootstrapped
+    if not doctypes:
+        doctypes = pick_doctypes(q, top_n=route_top_n) or []
+
+    # 4. Enforce exclusion list
+    doctypes = _filter_excluded(doctypes)
+
+    # 5. Filter out system DocTypes
+    system_doctypes = {"AI Knowledge Base"}
+    content_doctypes = [dt for dt in doctypes if dt not in system_doctypes]
+    if content_doctypes:
+        doctypes = content_doctypes
+
+    # 6. Static fallback if routing produced nothing
+    if not doctypes:
+        schema = load_schema()
+        all_allowed = [t.replace("tab", "") for t in schema.get("allowlist", [])]
+        content_priority = [
+            "VideoClass", "Course", "LearningObjective", "NoteContent",
+            "Quiz", "Assignment", "LearningUnit",
+        ]
+        doctypes = [dt for dt in content_priority if dt in all_allowed][:route_top_n]
+        if not doctypes:
+            doctypes = all_allowed[:route_top_n]
+
     all_matches: List[Dict[str, Any]] = []
 
     #  OPTIMIZATION: Parallel queries (Phase 2)

@@ -1,0 +1,57 @@
+{
+ "actions": [],
+ "autoname": "field:doctype_name",
+ "creation": "2026-05-30 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "doctype_name",
+  "summary",
+  "vector",
+  "generated_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "doctype_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "DocType Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "summary",
+   "fieldtype": "Text",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "vector",
+   "fieldtype": "Long Text",
+   "label": "Vector"
+  },
+  {
+   "fieldname": "generated_at",
+   "fieldtype": "Datetime",
+   "label": "Generated At"
+  }
+ ],
+ "links": [],
+ "modified": "2026-05-30 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Tap AI",
+ "name": "Doctype Routing Profile",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

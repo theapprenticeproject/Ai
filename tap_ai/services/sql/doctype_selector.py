@@ -17,13 +17,15 @@ Key function:
 import json
 import logging
 import hashlib
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 import frappe
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import LLMClient
-from tap_ai.infra.sql_catalog import load_schema  
+from tap_ai.infra.sql_catalog import load_schema
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,12 @@ Rules:
 - Keep 'doctypes' length <= TOP_N.
 - No prose outside JSON. No backticks.
 """
+
+
+_SELECTOR_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_PROMPT),
+    ("human", "{user_msg}"),
+])
 
 
 def _schema_summary(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -150,26 +158,18 @@ def pick_doctypes(
         f"SCHEMA SUMMARY:\n{schema_snippet}"
     )
 
-    try:  
-        resp = llm.invoke(  
-            [  
-                ("system", SYSTEM_PROMPT),  
-                ("user", user_msg),  
-            ]  
-        )  
-        txt = resp.content.strip()  
-        data = json.loads(txt)  
-        doctypes = data.get("doctypes", [])  
-        result = _normalize_doctypes(doctypes, summary)[:top_n]  
-          
-        # Cache the result  
-        _cache_result(cache_key, result)  
-          
-        return result  
-  
-    except Exception as e:  
-        logger.warning("DocType selection LLM failed: %s", e)  
-        return []  
+    try:
+        chain = _SELECTOR_PROMPT | llm | JsonOutputParser()
+        data = chain.invoke({"user_msg": user_msg})
+        doctypes = data.get("doctypes", [])
+        result = _normalize_doctypes(doctypes, summary)[:top_n]
+
+        _cache_result(cache_key, result)
+        return result
+
+    except Exception as e:
+        logger.warning("DocType selection LLM failed: %s", e)
+        return []
   
 def clear_doctype_cache():  
     """Clear all doctype selection cache"""  
