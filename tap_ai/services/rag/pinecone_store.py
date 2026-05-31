@@ -43,6 +43,8 @@ from tap_ai.utils.remote_db import execute_remote_query, execute_remote_query_pa
 #  OPTIMIZATION: Embedding caching (Phase 1)
 EMBEDDING_CACHE_TTL = 86400  # 24 hours
 
+_KB_NAMESPACE = "TAP Response Knowledge"
+
 _PINECONE_CLIENT = None
 _PINECONE_INDEX = None
 _PINECONE_INDEX_NAME = None
@@ -541,6 +543,7 @@ def search_auto_namespaces(
         if not doctypes:
             doctypes = all_allowed[:route_top_n]
 
+
     all_matches: List[Dict[str, Any]] = []
 
     #  OPTIMIZATION: Parallel queries (Phase 2)
@@ -610,6 +613,130 @@ def search_auto_namespaces(
         "k": k,
         "matches": all_matches[:k],
     }
+
+
+# -------------------------------------------------------------------
+# Knowledge Bank (TAP Response Knowledge) Pinecone sync
+# -------------------------------------------------------------------
+
+def upsert_kb_entries() -> Dict[str, Any]:
+    """
+    Bulk-upsert all active TAP Response Knowledge entries to Pinecone.
+    Each entry → one vector: student_query + alternate_queries + response.
+
+    Run once after deploying:
+        bench execute tap_ai.services.rag.pinecone_store.upsert_kb_entries
+    """
+    from tap_ai.services.kb.direct_response_bank import get_direct_response_entries, _parse_aliases
+
+    entries = get_direct_response_entries(force_refresh=True)
+    active = [e for e in entries if e.get("is_active", 1)]
+
+    if not active:
+        print(f"[kb] No active entries found in {_KB_NAMESPACE}")
+        return {"upserted": 0}
+
+    idx = _index()
+    texts, ids, metas = [], [], []
+
+    for e in active:
+        alt_list = _parse_aliases(e.get("alternate_queries") or "")
+        alt_str = "\n".join(alt_list) if alt_list else ""
+        text = (
+            f"Student query: {e.get('student_query', '')}\n"
+            f"Alternate queries: {alt_str}\n"
+            f"Response: {e.get('response', '')}"
+        )
+        safe_id = f"{_KB_NAMESPACE}:{e.get('name', '')}".encode("ascii", "ignore").decode("ascii")
+        texts.append(text)
+        ids.append(safe_id)
+        metas.append({
+            "doctype": _KB_NAMESPACE,
+            "record_ids": [e.get("name", "")],
+            "count": 1,
+            "context_preview": text[:25000],
+            "response": e.get("response", ""),
+            "category": e.get("category", ""),
+            "student_query": e.get("student_query", ""),
+        })
+
+    vectors = embed_documents_cached(texts)
+    payload = [
+        {"id": ids[i], "values": vectors[i], "metadata": metas[i]}
+        for i in range(len(texts))
+    ]
+    idx.upsert(vectors=payload, namespace=_KB_NAMESPACE)
+    print(f"[kb] Upserted {len(payload)} entries to Pinecone namespace '{_KB_NAMESPACE}'")
+    return {"upserted": len(payload)}
+
+
+def sync_kb_entry_to_pinecone(doc, method):
+    """Hook: queue a Pinecone upsert/delete for a KB entry on after_insert/after_update."""
+    try:
+        frappe.enqueue(
+            "tap_ai.services.rag.pinecone_store._do_sync_kb_entry",
+            name=doc.name,
+            is_active=int(getattr(doc, "is_active", 1) or 0),
+            student_query=doc.student_query or "",
+            alternate_queries=str(doc.alternate_queries or ""),
+            response=doc.response or "",
+            category=str(getattr(doc, "category", "") or ""),
+            queue="long",
+            job_name=f"kb_pinecone_sync_{doc.name}",
+        )
+    except Exception as e:
+        frappe.log_error(f"[kb] Failed to queue Pinecone sync for {doc.name}: {e}")
+
+
+def _do_sync_kb_entry(name, is_active, student_query, alternate_queries, response, category=""):
+    """Background worker: upsert or delete one KB entry vector in Pinecone."""
+    from tap_ai.services.kb.direct_response_bank import _parse_aliases
+
+    safe_id = f"{_KB_NAMESPACE}:{name}".encode("ascii", "ignore").decode("ascii")
+
+    if not is_active:
+        try:
+            _index().delete(ids=[safe_id], namespace=_KB_NAMESPACE)
+            logger.info(f"[kb] Deleted inactive entry {name} from Pinecone")
+        except Exception as e:
+            frappe.log_error(f"[kb] Pinecone delete failed for {name}: {e}")
+        return
+
+    alt_list = _parse_aliases(alternate_queries)
+    alt_str = "\n".join(alt_list) if alt_list else ""
+    text = (
+        f"Student query: {student_query}\n"
+        f"Alternate queries: {alt_str}\n"
+        f"Response: {response}"
+    )
+    try:
+        vectors = embed_documents_cached([text])
+        _index().upsert(vectors=[{
+            "id": safe_id,
+            "values": vectors[0],
+            "metadata": {
+                "doctype": _KB_NAMESPACE,
+                "record_ids": [name],
+                "count": 1,
+                "context_preview": text[:25000],
+                "response": response,
+                "category": category,
+                "student_query": student_query,
+            },
+        }], namespace=_KB_NAMESPACE)
+        logger.info(f"[kb] Synced entry {name} to Pinecone")
+    except Exception as e:
+        frappe.log_error(f"[kb] Pinecone upsert failed for {name}: {e}")
+
+
+def delete_kb_entry_from_pinecone(doc, method):
+    """Hook: delete a KB entry vector from Pinecone on after_delete."""
+    try:
+        safe_id = f"{_KB_NAMESPACE}:{doc.name}".encode("ascii", "ignore").decode("ascii")
+        _index().delete(ids=[safe_id], namespace=_KB_NAMESPACE)
+        logger.info(f"[kb] Deleted {doc.name} from Pinecone")
+    except Exception as e:
+        frappe.log_error(f"[kb] Pinecone delete failed for {doc.name}: {e}")
 
 
 # -------------------------------------------------------------------
