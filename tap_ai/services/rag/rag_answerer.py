@@ -234,6 +234,7 @@ def retrieve_vector_search(
 
     matches = search_result.get("matches") or []
     routed_doctypes = search_result.get("routed_doctypes") or []
+    profiler_enabled = search_result.get("profiler_enabled", True)
 
     if not matches:
         timings_ms["total"] = int((time.time() - start) * 1000)
@@ -254,6 +255,7 @@ def retrieve_vector_search(
                 "sources": [],
                 "timings_ms": timings_ms,
                 "context_stats": {},
+                "profiler_enabled": profiler_enabled,
             },
             "context_text": "",
             "context_stats": {},
@@ -283,6 +285,7 @@ def retrieve_vector_search(
                 "sources": ctx["sources"],
                 "timings_ms": timings_ms,
                 "context_stats": ctx.get("stats") or {},
+                "profiler_enabled": profiler_enabled,
             },
             "context_text": "",
             "context_stats": ctx.get("stats") or {},
@@ -306,6 +309,7 @@ def retrieve_vector_search(
             "sources": ctx["sources"],
             "timings_ms": timings_ms,
             "context_stats": ctx.get("stats") or {},
+            "profiler_enabled": profiler_enabled,
         },
         "context_text": context_text,
         "context_stats": ctx.get("stats") or {},
@@ -418,6 +422,7 @@ def answer_from_pinecone(
 
     matches = search_result.get("matches") or []
     routed_doctypes = search_result.get("routed_doctypes") or []
+    profiler_enabled = search_result.get("profiler_enabled", True)
 
     if not matches:
         timings_ms["total"] = int((time.time() - start) * 1000)
@@ -480,6 +485,7 @@ def answer_from_pinecone(
             "sources": ctx["sources"],
             "timings_ms": timings_ms,
             "context_stats": ctx.get("stats") or {},
+            "profiler_enabled": profiler_enabled,
         },
     }
 

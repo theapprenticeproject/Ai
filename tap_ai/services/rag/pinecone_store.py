@@ -490,25 +490,37 @@ def search_auto_namespaces(
     """
     Parallel Pinecone queries with embedding-based namespace routing.
 
-    Routing priority:
+    Routing priority (when enable_doctype_profiler is True, the default):
       1. Cosine similarity against pre-built DocType profile vectors (sub-ms, no LLM)
       2. LLM-based pick_doctypes fallback (used only until profiles are bootstrapped)
       3. Static content DocType list (last resort)
+
+    When enable_doctype_profiler is False the profiler is bypassed entirely and
+    all allowlisted DocTypes are queried — useful for latency A/B comparisons.
     """
     idx = _index()
 
     # 1. Embed query first — reused for both routing and Pinecone search
     qvec = embed_query_cached(q)
 
-    # 2. Route via cosine similarity against DocType profile vectors (zero extra LLM call)
-    from tap_ai.services.routing.doctype_profiler import route_by_similarity
-    doctypes = route_by_similarity(qvec, top_n=route_top_n)
+    # 2. Profiler switch — toggle via site_config: enable_doctype_profiler (default True)
+    raw_flag = get_config("enable_doctype_profiler")
+    profiler_enabled = True if raw_flag is None else bool(raw_flag)
 
-    # 3. Fall back to LLM routing if profiles not yet bootstrapped
-    if not doctypes:
-        doctypes = pick_doctypes(q, top_n=route_top_n) or []
+    if profiler_enabled:
+        # Cosine similarity against DocType profile vectors (zero extra LLM call)
+        from tap_ai.services.routing.doctype_profiler import route_by_similarity
+        doctypes = route_by_similarity(qvec, top_n=route_top_n)
 
-    # 4. Enforce exclusion list
+        # Fall back to LLM routing if profiles not yet bootstrapped
+        if not doctypes:
+            doctypes = pick_doctypes(q, top_n=route_top_n) or []
+    else:
+        # Profiler OFF: search across every allowlisted DocType namespace
+        schema = load_schema()
+        doctypes = [t.replace("tab", "") for t in schema.get("allowlist", [])]
+
+    # 3. Enforce exclusion list
     doctypes = _filter_excluded(doctypes)
 
     # 5. Filter out system DocTypes
@@ -594,6 +606,7 @@ def search_auto_namespaces(
     return {
         "q": q,
         "routed_doctypes": doctypes,
+        "profiler_enabled": profiler_enabled,
         "k": k,
         "matches": all_matches[:k],
     }
