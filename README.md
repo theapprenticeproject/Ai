@@ -59,6 +59,8 @@ Current deployment topology:
 | Async processing | RabbitMQ workers decouple API from execution |
 | Dynamic configuration | Per-deployment config via TAP LMS DocTypes |
 | Admin exclusions | DocType-level exclusion system for RAG indexing |
+| A/B experiment switches | `enable_doctype_profiler` and `enable_llm_router` flags for live latency experiments without code changes |
+| KB vector fallback | TAP Response Knowledge indexed in Pinecone; conversational queries that slip past regex are caught by cosine similarity |
 
 ### Technology Stack
 
@@ -506,6 +508,8 @@ Edit your site's `site_config.json` file and add:
 | `rag_max_context_hits` | int | Max Pinecone hits used for context building | `6` |
 | `rag_synthesis_model` | string | LLM model for RAG answer synthesis | `gpt-4o-mini` |
 | `rag_synthesis_max_tokens` | int | Max tokens for RAG answer | `500` |
+| `enable_doctype_profiler` | bool | **A/B switch.** When `false`, bypasses cosine-similarity namespace routing and queries all allowlisted DocTypes — useful for latency experiments. | `true` |
+| `enable_llm_router` | bool | **A/B switch.** When `false`, queries that don't match fast regex patterns go straight to `vector_search` with no LLM call. | `true` |
 
 ### Step 2: Environment Variables (Alternative)
 
@@ -565,6 +569,48 @@ bench execute tap_ai.services.routing.doctype_profiler.generate_doctype_profile 
 ```json
 "profiler_summary_model": "gpt-4o"
 ```
+
+### Step 5: Bootstrap Knowledge Bank in Pinecone
+
+The `TAP Response Knowledge` doctype is indexed as its own Pinecone namespace so conversational queries that slip past the fast regex patterns can still be routed there via cosine similarity.
+
+**5a. Generate the KB routing profile** (hand-crafted summary — no LLM needed):
+```bash
+bench execute tap_ai.services.routing.doctype_profiler.generate_kb_profile
+```
+
+**5b. Index all active KB entries into Pinecone:**
+```bash
+bench execute tap_ai.services.rag.pinecone_store.upsert_kb_entries
+```
+
+After the initial load, every KB save/delete triggers an incremental Pinecone sync automatically via `doc_events` hooks — no manual re-run needed.
+
+### A/B Experiment Switches
+
+Two feature flags let you toggle major routing decisions live via `bench set-config` and a worker restart — no code deployment needed.
+
+| Flag | Default | Effect when `false` |
+|---|---|---|
+| `enable_doctype_profiler` | `true` | Skips cosine-similarity namespace routing; queries all 35 allowlisted DocTypes in parallel |
+| `enable_llm_router` | `true` | Queries that don't match fast regex go straight to `vector_search` with no LLM call |
+
+Both flags are surfaced in every response under `metadata.profiler_enabled` / `metadata.llm_router_enabled` so latency can be compared directly from the response JSON.
+
+```bash
+# Example: disable LLM router for A/B test
+bench --site ai.all set-config enable_llm_router false
+bench --site ai.all restart
+
+# Re-enable
+bench --site ai.all set-config enable_llm_router true
+bench --site ai.all restart
+```
+
+> **Benchmark result (2026-05-31):** Profiler ON vs OFF on `"What is Zentangle arts?"`:
+> - Profiler ON → 1,004 ms vector search, 2,330 ms total (5 namespaces)
+> - Profiler OFF → 3,916 ms vector search, 6,215 ms total (35 namespaces)
+> - **Profiler ON is ~2.7× faster end-to-end.** Keep it on in production.
 
 ### Pinecone Maintenance Commands
 
@@ -1025,7 +1071,7 @@ This project is licensed under the terms specified in `license.txt`.
 
 ---
 
-**Last Updated:** 2026-05-30
-**Version:** 2.1.0
+**Last Updated:** 2026-05-31
+**Version:** 2.2.0
 **Author:** Anish Aman
 **Repository:** theapprenticeproject/Ai
