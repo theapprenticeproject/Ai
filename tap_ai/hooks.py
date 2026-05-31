@@ -11,9 +11,18 @@ app_license = "MIT"
 # ======================================================
 doc_events = {
 	"TAP Response Knowledge": {
-		"after_insert": "tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
-		"after_update": "tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
-		"after_delete": "tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
+		"after_insert": [
+			"tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
+			"tap_ai.services.rag.pinecone_store.sync_kb_entry_to_pinecone",
+		],
+		"after_update": [
+			"tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
+			"tap_ai.services.rag.pinecone_store.sync_kb_entry_to_pinecone",
+		],
+		"after_delete": [
+			"tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
+			"tap_ai.services.rag.pinecone_store.delete_kb_entry_from_pinecone",
+		],
 	}
 }
 

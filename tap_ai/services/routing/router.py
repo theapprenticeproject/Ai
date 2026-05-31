@@ -71,6 +71,13 @@ def choose_tool(query: str, user_context: Optional[str] = None) -> str:
     if fast_tool:
         return fast_tool
 
+    # A/B switch: enable_llm_router=false skips LLM and defaults to vector_search.
+    # Default true — existing behaviour unchanged.
+    raw_flag = get_config("enable_llm_router")
+    if raw_flag is not None and not bool(raw_flag):
+        logger.debug("LLM router disabled (enable_llm_router=false) — defaulting to vector_search")
+        return "vector_search"
+
     prompt = f"USER QUESTION:\n{query}"
     if user_context:
         prompt = f"USER CONTEXT:\n{user_context}\n\n{prompt}"
@@ -175,6 +182,9 @@ def process_query(
 
     chat_history = chat_history or []
     process_start = time.perf_counter()
+
+    raw_llm_flag = get_config("enable_llm_router")
+    llm_router_enabled = True if raw_llm_flag is None else bool(raw_llm_flag)
 
     # -------- Build user context string (for routing) --------
     user_context = None
@@ -283,7 +293,9 @@ def process_query(
         timings = {"processing_total": processing_ms}
         if routing_ms:
             timings["route_ms"] = routing_ms
-        return _with_meta(result, query, "knowledge_bank", False, timing_ms=timings)
+        out = _with_meta(result, query, "knowledge_bank", False, timing_ms=timings)
+        out["metadata"]["llm_router_enabled"] = llm_router_enabled
+        return out
 
     if primary_tool == "text_to_sql":
         result = answer_from_sql(
@@ -320,7 +332,9 @@ def process_query(
     timings = {"processing_total": processing_ms}
     if routing_ms:
         timings["route_ms"] = routing_ms
-    return _with_meta(result, query, primary_tool, fallback_used, timing_ms=timings)
+    out = _with_meta(result, query, primary_tool, fallback_used, timing_ms=timings)
+    out["metadata"]["llm_router_enabled"] = llm_router_enabled
+    return out
 
 
 # ======================================================
