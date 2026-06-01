@@ -18,30 +18,26 @@ from loguru import logger
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import LLMClient
-from tap_ai.services.routing.routing_patterns import is_quiz_context, is_quiz_answer
 
 
-_REFINER_SYSTEM = """Given a chat history and a follow-up question, rewrite the follow-up question to be a standalone question that a search engine can understand.
+_REFINER_SYSTEM = """You are a context resolver. Given a chat history and a follow-up message, return a refined version that stands alone — someone should understand it without seeing the conversation.
 
-- If already standalone, return as is
-- Incorporate relevant context from history
-- Do NOT answer the question
-- If the history shows a quiz question was just asked (with A), B), C) options) and the user's reply is a single letter or option text, expand it to: "Is [option text] the correct answer to the quiz question: [question]?"
+Rules:
+1. Resolve ambiguous references (pronouns like "it", "this", "that"; ordinals like "the first one"; phrases like "the previous topic") by substituting the specific entity from history.
+2. Preserve the message type — do NOT convert a statement into a question:
+   - QUESTION or information request → rewrite as a complete standalone question.
+   - STATEMENT, reaction, or acknowledgement (e.g. "thanks for the video", "that was great", "got it") → keep as a statement, only filling in missing references (e.g. "thanks for the video" → "thanks for the video about [topic from history]").
+3. If the message is already self-contained with no ambiguous references, return it unchanged.
+4. Quiz shortcut: if the last assistant message contained a quiz with labelled options (A), B), C)…) and the current message is a single letter or matching option text, expand to: "Is [option text] the correct answer to the quiz: [question text]?"
+5. Never answer the message. Never invent context not present in history.
 
-Return ONLY the refined question.
+Return ONLY the refined message. No explanation, no prefix.
 """
 
 _REFINE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", _REFINER_SYSTEM),
-    ("human", "CHAT HISTORY:\n{history}\n\nFOLLOW-UP QUESTION:\n{query}\n\nREFINED STANDALONE QUESTION:"),
+    ("human", "CHAT HISTORY:\n{history}\n\nFOLLOW-UP MESSAGE:\n{query}\n\nREFINED STANDALONE MESSAGE:"),
 ])
-
-_FOLLOW_UP_MARKERS = (
-    "it", "this", "that", "these", "those", "they", "them", "he", "she", "yes",
-    "first one", "second one", "third one", "the above", "previous", "earlier",
-    "same", "that one", "explain more", "summarize that", "what about", "how about",
-)
-
 
 def _to_int(value, default: int) -> int:
     try:
@@ -51,29 +47,8 @@ def _to_int(value, default: int) -> int:
 
 
 def _should_refine_query(query: str, history: List[Dict[str, str]]) -> bool:
-    """Return True only for likely follow-up queries; skip standalone ones to save ~1-2s."""
-    if not history:
-        return False
-
-    force_refine = str(get_config("rag_force_query_refine") or "").strip().lower()
-    if force_refine in ("1", "true", "yes", "on"):
-        return True
-
-    q = (query or "").strip().lower()
-    if not q:
-        return False
-
-    if any(marker in q for marker in _FOLLOW_UP_MARKERS):
-        return True
-
-    if q.startswith(("and ", "then ", "also ", "so ")):
-        return True
-
-    # Force refinement when user is answering a quiz question
-    if is_quiz_context(history) and is_quiz_answer(query):
-        return True
-
-    return False
+    """Return True whenever there is conversation history to draw context from."""
+    return bool(history) and bool((query or "").strip())
 
 
 def refine_query_with_history(query: str, history: List[Dict[str, str]]) -> str:

@@ -382,12 +382,11 @@ class LLMWorker:
             refine_ms = 0
             route_ms = 0
             if match_fast_kb_unconditional(query):
+                # Greetings / sign-offs / identity — context enrichment would corrupt them.
                 primary_tool = "knowledge_bank"
                 refined_query = query
-            elif match_fast_sql(query):
-                primary_tool = "text_to_sql"
-                refined_query = query
             else:
+                # Refine for all non-KB paths (text_to_sql and vector_search).
                 refined_query = query
                 refine_start = time.perf_counter()
                 try:
@@ -398,9 +397,12 @@ class LLMWorker:
                     pass
                 refine_ms = int((time.perf_counter() - refine_start) * 1000)
 
-                route_start = time.perf_counter()
-                primary_tool = choose_tool(refined_query)
-                route_ms = int((time.perf_counter() - route_start) * 1000)
+                if match_fast_sql(query):
+                    primary_tool = "text_to_sql"
+                else:
+                    route_start = time.perf_counter()
+                    primary_tool = choose_tool(refined_query)
+                    route_ms = int((time.perf_counter() - route_start) * 1000)
 
             if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
                 logger.debug(f"KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
