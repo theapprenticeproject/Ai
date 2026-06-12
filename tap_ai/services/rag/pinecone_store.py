@@ -406,7 +406,7 @@ def upsert_doctype(
             "doctype": doctype,
             "record_ids": record_ids,
             "count": len(group),
-            "context_preview": text[:25000],
+            "context_preview": text[:5000],
         })
         if len(buffer_texts) >= embed_batch:
             flush()
@@ -654,7 +654,7 @@ def upsert_kb_entries() -> Dict[str, Any]:
             "doctype": _KB_NAMESPACE,
             "record_ids": [e.get("name", "")],
             "count": 1,
-            "context_preview": text[:25000],
+            "context_preview": text[:5000],
             "response": e.get("response", ""),
             "category": e.get("category", ""),
             "student_query": e.get("student_query", ""),
@@ -718,7 +718,7 @@ def _do_sync_kb_entry(name, is_active, student_query, alternate_queries, respons
                 "doctype": _KB_NAMESPACE,
                 "record_ids": [name],
                 "count": 1,
-                "context_preview": text[:25000],
+                "context_preview": text[:5000],
                 "response": response,
                 "category": category,
                 "student_query": student_query,
