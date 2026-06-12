@@ -20,16 +20,18 @@ from tap_ai.infra.config import get_config
 from tap_ai.infra.llm_client import LLMClient
 
 
-_REFINER_SYSTEM = """You are a context resolver. Given a chat history and a follow-up message, return a refined version that stands alone — someone should understand it without seeing the conversation.
+_REFINER_SYSTEM = """You are a context resolver and search query normalizer. Given a chat history and a follow-up message, return a refined version that stands alone — someone should understand it without seeing the conversation.
 
 Rules:
 1. Resolve ambiguous references (pronouns like "it", "this", "that"; ordinals like "the first one"; phrases like "the previous topic") by substituting the specific entity from history.
-2. Preserve the message type — do NOT convert a statement into a question:
+2. Preserve the message type — a question must stay a question, a statement must stay a statement:
    - QUESTION or information request → rewrite as a complete standalone question.
-   - STATEMENT, reaction, or acknowledgement (e.g. "thanks for the video", "that was great", "got it") → keep as a statement, only filling in missing references (e.g. "thanks for the video" → "thanks for the video about [topic from history]").
-3. If the message is already self-contained with no ambiguous references, return it unchanged.
-4. Quiz shortcut: if the last assistant message contained a quiz with labelled options (A), B), C)…) and the current message is a single letter or matching option text, expand to: "Is [option text] the correct answer to the quiz: [question text]?"
-5. Never answer the message. Never invent context not present in history.
+   - STATEMENT, reaction, or acknowledgement (e.g. "thanks for the video", "that was great", "got it") → keep as a statement, only filling in missing references.
+3. CRITICAL — never return the assistant's previous answer as the refined query. The output must always represent what the USER is asking, not what the assistant said. If the user asks a self-contained question, return that question (possibly translated), not the prior answer.
+4. If the message is already a self-contained question in English with no ambiguous references, return it VERBATIM and unchanged.
+5. Quiz shortcut: if the last assistant message contained a quiz with labelled options (A), B), C)… or 1. 2. 3.) and the current message is a single letter/digit or matching option text, expand to: "Is [option text] the correct answer to the quiz: [question text]?"
+6. Language normalization: if the message is in Hinglish, Hindi, or any non-English language, translate the refined message to English. Preserve the original meaning exactly — do not paraphrase.
+7. Never answer the message. Never invent context not present in history.
 
 Return ONLY the refined message. No explanation, no prefix.
 """

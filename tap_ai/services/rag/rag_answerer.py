@@ -155,7 +155,7 @@ def _synthesize_answer(
     history = history or []
     synthesis_history_turns = max(0, _to_int(get_config("rag_synthesis_history_turns") or 1, 1))
     synthesis_temperature = _to_float(get_config("rag_synthesis_temperature") or 0.0, 0.0)
-    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 500, 500))
+    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 270, 270))
     synthesis_model = get_config("rag_synthesis_model") or "gpt-4o-mini"
 
     try:
