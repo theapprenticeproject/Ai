@@ -70,7 +70,7 @@ Current deployment topology:
 | Framework | Frappe 15 (ERPNext) |
 | LLM | OpenAI GPT models |
 | Embeddings | OpenAI `text-embedding-3-small` |
-| Vector DB | Pinecone |
+| Vector DB | Pinecone + pgvector |
 | Database | Remote PostgreSQL (`data.evalix.xyz`) |
 | Message Queue | RabbitMQ (Pika) |
 | Caching | Redis (LLM responses, KB entries, chat history, routing profiles) |
@@ -475,6 +475,7 @@ Edit your site's `site_config.json` file and add:
   
   "pinecone_api_key": "pcn-your-pinecone-key-here",
   "pinecone_index": "tap-ai-byo",
+  "rag_vector_backend": "pinecone",
   
   "rabbitmq_url": "amqp://guest:guest@localhost:5672/",
   
@@ -498,6 +499,7 @@ Edit your site's `site_config.json` file and add:
 | `embedding_model` | string | Model for embeddings | `text-embedding-3-small` |
 | `pinecone_api_key` | string | Pinecone authentication | Required |
 | `pinecone_index` | string | Pinecone index name | `tap-ai-byo` |
+| `rag_vector_backend` | string | RAG backend selector: `pinecone`, `pgvector`, or `both` | `pinecone` |
 | `rabbitmq_url` | string | RabbitMQ connection URL | `amqp://guest:guest@localhost:5672/` |
 | `redis_host` | string | Redis hostname | `localhost` |
 | `redis_port` | int | Redis port | `6379` |
@@ -519,6 +521,7 @@ Create `.env` file in frappe-bench:
 OPENAI_API_KEY=sk-your-key
 PINECONE_API_KEY=pcn-your-key
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+RAG_VECTOR_BACKEND=pinecone
 ```
 
 > Note: A local `.env` file is included for convenience. Do not store production secrets in source control.
@@ -535,16 +538,34 @@ bench execute tap_ai.schema.generate_schema.cli
 
 This creates `tap_ai_schema.json` needed by SQL and RAG engines.
 
-### Step 2: Create Pinecone Index
+### Step 2: Run pgvector migration
+
+```bash
+bench migrate
+```
+
+This runs the new patch that creates the pgvector table and indexes in the remote PostgreSQL database.
+
+If you see an error like `could not open extension control file ... vector.control`, the remote PostgreSQL host is missing the pgvector package. Install pgvector on that server first, then rerun the migration.
+
+For PostgreSQL 14, the package is usually `postgresql-14-pgvector`.
+
+### Step 3: Create Pinecone Index
 
 ```bash
 bench execute tap_ai.infra.pinecone_index.cli_ensure_index
 ```
 
-### Step 3: Populate Pinecone Index
+### Step 4: Populate Pinecone Index
 
 ```bash
 bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
+```
+
+### Step 5: Populate pgvector in parallel
+
+```bash
+bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all
 ```
 
 ### Step 4: Bootstrap DocType Routing Profiles
@@ -570,21 +591,26 @@ bench execute tap_ai.services.routing.doctype_profiler.generate_doctype_profile 
 "profiler_summary_model": "gpt-4o"
 ```
 
-### Step 5: Bootstrap Knowledge Bank in Pinecone
+### Step 6: Bootstrap Knowledge Bank in both vector stores
 
-The `TAP Response Knowledge` doctype is indexed as its own Pinecone namespace so conversational queries that slip past the fast regex patterns can still be routed there via cosine similarity.
+The `TAP Response Knowledge` doctype is indexed in both Pinecone and pgvector so conversational queries that slip past the fast regex patterns can still be routed there via cosine similarity.
 
 **5a. Generate the KB routing profile** (hand-crafted summary — no LLM needed):
 ```bash
 bench execute tap_ai.services.routing.doctype_profiler.generate_kb_profile
 ```
 
-**5b. Index all active KB entries into Pinecone:**
+**6b. Index all active KB entries into Pinecone:**
 ```bash
 bench execute tap_ai.services.rag.pinecone_store.upsert_kb_entries
 ```
 
-After the initial load, every KB save/delete triggers an incremental Pinecone sync automatically via `doc_events` hooks — no manual re-run needed.
+**6c. Index all active KB entries into pgvector:**
+```bash
+bench execute tap_ai.services.rag.pgvector_store.upsert_kb_entries
+```
+
+After the initial load, every KB save/delete triggers incremental sync to both backends automatically via `doc_events` hooks — no manual re-run needed.
 
 ### A/B Experiment Switches
 
@@ -594,6 +620,8 @@ Two feature flags let you toggle major routing decisions live via `bench set-con
 |---|---|---|
 | `enable_doctype_profiler` | `true` | Skips cosine-similarity namespace routing; queries all 35 allowlisted DocTypes in parallel |
 | `enable_llm_router` | `true` | Queries that don't match fast regex go straight to `vector_search` with no LLM call |
+
+Set `rag_vector_backend` to `both` to merge Pinecone and pgvector search results in the RAG path for comparison.
 
 Both flags are surfaced in every response under `metadata.profiler_enabled` / `metadata.llm_router_enabled` so latency can be compared directly from the response JSON.
 
@@ -614,10 +642,27 @@ bench --site ai.all restart
 
 ### Pinecone Maintenance Commands
 
-**Re-index a single DocType:**
+**Re-index a single DocType in Pinecone:**
 ```bash
 bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all \
   --kwargs "{'doctypes': ['VideoClass']}"
+```
+
+**Re-index a single DocType in pgvector:**
+```bash
+bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all \
+  --kwargs "{'doctypes': ['VideoClass']}"
+```
+
+**Run the pgvector migration directly:**
+```bash
+bench execute tap_ai.services.rag.pgvector_store.cli_migrate_pgvector
+```
+
+**Compare Pinecone vs pgvector on the same queries:**
+```bash
+bench execute tap_ai.services.rag.pgvector_store.cli_compare_backends \
+  --kwargs "{'queries': ['What is financial literacy?', 'Summarize the arts activity on Zentangle'], 'k': 5}"
 ```
 
 **Delete a namespace before re-indexing** (required when a DocType's chunking strategy changes — otherwise stale vectors accumulate):
@@ -629,6 +674,14 @@ bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace \
 Then re-upsert:
 ```bash
 bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all \
+  --kwargs "{'doctypes': ['QuizQuestion']}"
+```
+
+Do the same for pgvector if you changed chunking there:
+```bash
+bench execute tap_ai.services.rag.pgvector_store.cli_delete_namespace \
+  --kwargs "{'doctype': 'QuizQuestion'}"
+bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all \
   --kwargs "{'doctypes': ['QuizQuestion']}"
 ```
 
