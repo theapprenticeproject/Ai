@@ -406,7 +406,7 @@ def upsert_doctype(
             "doctype": doctype,
             "record_ids": record_ids,
             "count": len(group),
-            "context_preview": text[:25000],
+            "context_preview": text[:5000],
         })
         if len(buffer_texts) >= embed_batch:
             flush()
@@ -654,7 +654,7 @@ def upsert_kb_entries() -> Dict[str, Any]:
             "doctype": _KB_NAMESPACE,
             "record_ids": [e.get("name", "")],
             "count": 1,
-            "context_preview": text[:25000],
+            "context_preview": text[:5000],
             "response": e.get("response", ""),
             "category": e.get("category", ""),
             "student_query": e.get("student_query", ""),
@@ -718,7 +718,7 @@ def _do_sync_kb_entry(name, is_active, student_query, alternate_queries, respons
                 "doctype": _KB_NAMESPACE,
                 "record_ids": [name],
                 "count": 1,
-                "context_preview": text[:25000],
+                "context_preview": text[:5000],
                 "response": response,
                 "category": category,
                 "student_query": student_query,
@@ -788,6 +788,59 @@ def cli_delete_namespace(doctype: str) -> None:
     idx = _index()
     idx.delete(delete_all=True, namespace=doctype)
     print(f"[ok] Namespace '{doctype}' deleted from Pinecone.")
+
+
+def cli_inspect_namespaces() -> None:
+    """
+    Print vector counts per namespace and measure per-namespace query latency.
+
+    bench execute tap_ai.services.rag.pinecone_store.cli_inspect_namespaces
+    """
+    idx = _index()
+
+    # --- vector counts ---
+    stats = idx.describe_index_stats()
+    ns_stats = stats.get("namespaces") or {}
+
+    rows = []
+    for ns, info in ns_stats.items():
+        rows.append({"namespace": ns, "vectors": info.get("vector_count", 0)})
+    rows.sort(key=lambda r: r["vectors"], reverse=True)
+
+    print(f"\n{'Namespace':<40} {'Vectors':>8}")
+    print("-" * 50)
+    total = 0
+    for r in rows:
+        print(f"{r['namespace']:<40} {r['vectors']:>8,}")
+        total += r["vectors"]
+    print("-" * 50)
+    print(f"{'TOTAL':<40} {total:>8,}")
+
+    # --- per-namespace latency (probe with a zero vector) ---
+    dim = stats.get("dimension") or 1536
+    zero_vec = [0.0] * dim
+
+    print(f"\n{'Namespace':<40} {'Latency (ms)':>12}")
+    print("-" * 55)
+    latencies = []
+    for r in rows:
+        ns = r["namespace"]
+        t0 = time.perf_counter()
+        try:
+            idx.query(namespace=ns, vector=zero_vec, top_k=1, include_metadata=False, include_values=False)
+        except Exception:
+            pass
+        ms = (time.perf_counter() - t0) * 1000
+        latencies.append((ns, ms))
+
+    latencies.sort(key=lambda x: x[1], reverse=True)
+    for ns, ms in latencies:
+        marker = "  <-- SLOWEST" if ns == latencies[0][0] else ""
+        print(f"{ns:<40} {ms:>10.1f}ms{marker}")
+
+    slowest_ns, slowest_ms = latencies[0]
+    print(f"\nSlowest namespace : {slowest_ns}  ({slowest_ms:.0f} ms)")
+    print(f"Fastest namespace : {latencies[-1][0]}  ({latencies[-1][1]:.0f} ms)\n")
 
 
 def cli_search_auto(q: str, k: int = 6, route_top_n: int = 4):

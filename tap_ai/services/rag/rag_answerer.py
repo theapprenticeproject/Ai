@@ -23,7 +23,88 @@ from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.models import ContentDetails, UserProfile
 from tap_ai.utils.prompt_bank import get_system_message_for_context
 from tap_ai.utils.query_refiner import refine_query_with_history
-from tap_ai.services.rag.pinecone_store import search_auto_namespaces
+from tap_ai.services.rag.pinecone_store import search_auto_namespaces as search_auto_namespaces_pinecone
+from tap_ai.services.rag.pgvector_store import search_auto_namespaces as search_auto_namespaces_pgvector
+
+
+def _rag_vector_backend() -> str:
+    backend = str(get_config("rag_vector_backend") or "pinecone").strip().lower()
+    if backend in {"pinecone", "pgvector", "both"}:
+        return backend
+    return "pinecone"
+
+
+def _search_rag_vectors(
+    q: str,
+    k: int = 6,
+    route_top_n: int = 4,
+    filters: Optional[Dict[str, Any]] = None,
+    use_parallel: bool = True,
+) -> Dict[str, Any]:
+    backend = _rag_vector_backend()
+    if backend == "pgvector":
+        return search_auto_namespaces_pgvector(
+            q=q,
+            k=k,
+            route_top_n=route_top_n,
+            filters=filters,
+            use_parallel=use_parallel,
+        )
+    if backend == "both":
+        pinecone_result = search_auto_namespaces_pinecone(
+            q=q,
+            k=k,
+            route_top_n=route_top_n,
+            filters=filters,
+            use_parallel=use_parallel,
+        )
+        pgvector_result = search_auto_namespaces_pgvector(
+            q=q,
+            k=k,
+            route_top_n=route_top_n,
+            filters=filters,
+            use_parallel=use_parallel,
+        )
+        merged_matches: List[Dict[str, Any]] = []
+        seen = set()
+        for result in (pinecone_result, pgvector_result):
+            for match in result.get("matches") or []:
+                key = (match.get("namespace"), match.get("id"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                metadata = dict(match.get("metadata") or {})
+                metadata["source_backend"] = metadata.get("source_backend") or result.get("backend") or "pinecone"
+                merged_matches.append(
+                    {
+                        "id": match.get("id"),
+                        "score": match.get("score", 0),
+                        "namespace": match.get("namespace"),
+                        "metadata": metadata,
+                    }
+                )
+        merged_matches.sort(key=lambda item: item.get("score", 0), reverse=True)
+        return {
+            "q": q,
+            "routed_doctypes": list(
+                dict.fromkeys(
+                    (pinecone_result.get("routed_doctypes") or []) + (pgvector_result.get("routed_doctypes") or [])
+                )
+            ),
+            "profiler_enabled": bool(
+                pinecone_result.get("profiler_enabled", True) and pgvector_result.get("profiler_enabled", True)
+            ),
+            "k": max(int(pinecone_result.get("k") or 0), int(pgvector_result.get("k") or 0), k),
+            "matches": merged_matches[:k],
+            "backend": "both",
+        }
+    return search_auto_namespaces_pinecone(
+        q=q,
+        k=k,
+        route_top_n=route_top_n,
+        filters=filters,
+        use_parallel=use_parallel,
+    )
 
 
 def _to_int(value: Any, default: int) -> int:
@@ -155,7 +236,7 @@ def _synthesize_answer(
     history = history or []
     synthesis_history_turns = max(0, _to_int(get_config("rag_synthesis_history_turns") or 1, 1))
     synthesis_temperature = _to_float(get_config("rag_synthesis_temperature") or 0.0, 0.0)
-    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 500, 500))
+    synthesis_max_tokens = max(180, _to_int(get_config("rag_synthesis_max_tokens") or 270, 270))
     synthesis_model = get_config("rag_synthesis_model") or "gpt-4o-mini"
 
     try:
@@ -224,7 +305,7 @@ def retrieve_vector_search(
     _stamp("build_filters", t_filters)
 
     t_search = time.time()
-    search_result = search_auto_namespaces(
+    search_result = _search_rag_vectors(
         q=refined_query,
         k=effective_k,
         route_top_n=route_top_n,
@@ -412,7 +493,7 @@ def answer_from_pinecone(
 
     # 3. Pinecone search
     t_search = time.time()
-    search_result = search_auto_namespaces(
+    search_result = _search_rag_vectors(
         q=refined_query,
         k=effective_k,
         route_top_n=route_top_n,
