@@ -28,10 +28,10 @@ from tap_ai.services.rag.pgvector_store import search_auto_namespaces as search_
 
 
 def _rag_vector_backend() -> str:
-    backend = str(get_config("rag_vector_backend") or "pinecone").strip().lower()
+    backend = str(get_config("rag_vector_backend") or "pgvector").strip().lower()
     if backend in {"pinecone", "pgvector", "both"}:
         return backend
-    return "pinecone"
+    return "pgvector"
 
 
 def _search_rag_vectors(
