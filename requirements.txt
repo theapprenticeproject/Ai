@@ -11,10 +11,7 @@ langchain-openai>=0.1.17
 # Data validation
 pydantic>=2.0
 
-# Vector DB
-pinecone
-
-# Remote PostgreSQL
+# Remote PostgreSQL (also hosts pgvector for RAG retrieval)
 psycopg2-binary
 
 # HTTP (used by stt_worker to download audio files)

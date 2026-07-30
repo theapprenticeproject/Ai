@@ -10,7 +10,7 @@ For each DocType in the allowlist:
   6. Cache in Redis for fast repeated access
 
 At query time:
-  - Reuse the already-computed Pinecone query embedding (zero extra cost)
+  - Reuse the already-computed pgvector query embedding (zero extra cost)
   - Cosine similarity vs all stored DocType vectors → top-N namespaces to search
 
 Auto-refresh:
@@ -92,7 +92,7 @@ def _fetch_all_titles(doctype: str) -> List[str]:
 
         # Collect fields to SELECT: title + any content-rich fields present in this DocType.
         # Cross-check against actual DB columns — meta and remote DB can diverge.
-        from tap_ai.services.rag.pinecone_store import get_db_columns_for_doctype
+        from tap_ai.services.rag.pgvector_store import get_db_columns_for_doctype
         meta_fields = {f.fieldname for f in meta.fields}
         db_columns = set(get_db_columns_for_doctype(doctype) or [])
         extra = sorted(_CONTENT_FIELDS & meta_fields & db_columns)
@@ -237,8 +237,8 @@ def generate_doctype_profile(doctype: str) -> bool:
 
     Safe to call in a background job.
     """
-    # Import here to avoid circular import (pinecone_store imports from this module)
-    from tap_ai.services.rag.pinecone_store import embed_documents_cached
+    # Import here to avoid circular import (pgvector_store imports from this module)
+    from tap_ai.services.rag.pgvector_store import embed_documents_cached
 
     try:
         logger.info(f"[profiler] Generating profile for {doctype}")
@@ -300,10 +300,10 @@ def generate_kb_profile() -> bool:
     Bypasses the standard LLM-summary flow because KB entries are short intent
     phrases — the hand-crafted _KB_PROFILE_SUMMARY produces a better routing vector.
 
-    Run once after deploying KB Pinecone indexing:
+    Run once after deploying KB pgvector indexing:
         bench execute tap_ai.services.routing.doctype_profiler.generate_kb_profile
     """
-    from tap_ai.services.rag.pinecone_store import embed_documents_cached
+    from tap_ai.services.rag.pgvector_store import embed_documents_cached
 
     try:
         logger.info(f"[profiler] Generating KB profile for {_KB_DOCTYPE}")

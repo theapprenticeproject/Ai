@@ -7,7 +7,7 @@ is not viable. Instead, the client polls in three sequential phases, each
 with a ~9-second wait and 200 ms poll interval:
 
     phase=router  → returns once routing decision is written to Redis
-    phase=search  → returns once Pinecone vector search completes
+    phase=search  → returns once pgvector vector search completes
     phase=answer  → returns once the final answer is synthesized
 
 Each phase response includes `phase_complete`, `next_phase`, and the

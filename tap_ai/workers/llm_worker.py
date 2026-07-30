@@ -9,13 +9,13 @@ query-to-answer pipeline:
     2. Route to the appropriate engine via LLM or fast regex patterns:
            knowledge_bank  → direct KB lookup + optional LLM fallback
            text_to_sql     → SQL generation against remote PostgreSQL
-           vector_search   → two-step: retrieve (pinecone_store) then synthesize
+           vector_search   → two-step: retrieve (pgvector_store) then synthesize
     3. Save the answer and updated chat history to Redis
     4. For voice requests: forward to audio_tts_queue (if TTS enabled)
        or store text answer directly
 
 The vector_search engine is split across two queue messages (the same queue)
-to fit within Glific's per-hop timeout: the first message does the Pinecone
+to fit within Glific's per-hop timeout: the first message does the pgvector
 retrieval, the second (`stage=vector_search_synthesis`) generates the answer.
 
 Worker class: LLMWorker (injectable rabbitmq_url for testing)

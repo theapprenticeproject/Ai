@@ -24,7 +24,7 @@ from tap_ai.infra.llm_client import llm_invoke_cached
 from tap_ai.models import ContentDetails, UserProfile
 from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.services.sql.sql_answerer import answer_from_sql
-from tap_ai.services.rag.rag_answerer import answer_from_pinecone
+from tap_ai.services.rag.rag_answerer import answer_from_vector_search
 from tap_ai.services.kb.direct_response_bank import lookup_exact_direct_response
 from tap_ai.services.kb.kb_llm_router import verify_and_respond as verify_kb_and_respond
 from tap_ai.services.routing.routing_patterns import (
@@ -301,7 +301,7 @@ def process_query(
             logger.warning("SQL failure detected — falling back to RAG")
             fallback_used = True
             interim = "Searching, please wait a few more seconds..."
-            result = answer_from_pinecone(
+            result = answer_from_vector_search(
                 query,
                 user_profile=user_profile,
                 content_details=content_details,
@@ -312,7 +312,7 @@ def process_query(
 
     else:
         primary_tool = "vector_search"
-        result = answer_from_pinecone(
+        result = answer_from_vector_search(
             query,
             user_profile=user_profile,
             content_details=content_details,
