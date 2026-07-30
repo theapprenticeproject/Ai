@@ -1,17 +1,21 @@
-"""Knowledge-bank lookup for direct TAP responses."""
+"""Data access for TAP Response Knowledge — backs the pgvector KB index.
+
+Routing no longer calls into this module directly (TAP Response Knowledge is
+searched via vector_search / pgvector, same as any other DocType namespace).
+This module remains the source of truth for reading/caching KB entries and is
+used by pgvector_store.py to build embeddings and by the doc_events hooks to
+keep the pgvector index and cache in sync.
+"""
 
 from __future__ import annotations
 
 import json
 import re
-import time
 import unicodedata
 from typing import Any, Dict, List, Optional
 
 import frappe
 from loguru import logger
-
-from tap_ai.models import UserProfile
 
 
 KB_DOCTYPE = "TAP Response Knowledge"
@@ -62,46 +66,6 @@ def _parse_aliases(raw_value: Any) -> List[str]:
 		if alias and alias not in aliases:
 			aliases.append(alias)
 	return aliases
-
-
-def _entry_candidates(entry: Dict[str, Any]) -> List[str]:
-	"""
-	Extract ALL candidate phrases from a KB entry.
-	
-	This ensures we check BOTH student_query and alternate_queries to maximize
-	matching coverage in lookup_exact_direct_response().
-	
-	Process:
-	1. Collect primary phrase: student_query
-	2. Collect secondary phrase: normalized_query (if different)
-	3. Parse alternate_queries string/list into individual items
-	   └─ alternate_queries can be newline-separated, comma-separated, or a list
-	   └─ _parse_aliases() handles all formats
-	4. Return deduplicated list of all candidates
-	
-	Example:
-	  entry = {
-	    "student_query": "Hi",
-	    "alternate_queries": "Hey\nHello\nHii",
-	  }
-	  
-	  Returns: ["Hi", "Hey", "Hello", "Hii"]
-	  
-	  Then lookup_exact_direct_response() normalizes each and checks for matches.
-	"""
-	candidates = []
-	for value in (entry.get("student_query"), entry.get("normalized_query")):
-		text = str(value or "").strip()
-		if text and text not in candidates:
-			candidates.append(text)
-
-	for alias in _parse_aliases(entry.get("alternate_queries")):
-		if alias not in candidates:
-			candidates.append(alias)
-
-	return candidates
-
-
 
 
 def _load_entries_from_cache() -> Optional[List[Dict[str, Any]]]:
@@ -175,104 +139,6 @@ def invalidate_kb_cache() -> bool:
 		frappe.log_error(f"Failed to invalidate KB cache: {e}", "tap_ai.services.direct_response_bank")
 		return False
 
-
-
-def _render_response(response: str, user_profile: Optional[UserProfile] = None) -> str:
-	if not response:
-		return ""
-
-	placeholders = {
-		"student_name": str(user_profile.name or "").strip() if user_profile else "",
-		"name": str(user_profile.name or "").strip() if user_profile else "",
-		"grade": str(user_profile.grade or "").strip() if user_profile else "",
-		"batch": str(user_profile.batch or "").strip() if user_profile else "",
-	}
-
-	def replace(match: re.Match[str]) -> str:
-		key = match.group(1)
-		return placeholders.get(key, match.group(0))
-
-	return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", replace, str(response))
-
-
-
-def lookup_exact_direct_response(
-	query: str,
-	user_profile: Optional[UserProfile] = None,
-) -> Optional[Dict[str, Any]]:
-	"""
-	STAGE 1: EXACT MATCH LOOKUP (FAST PATH)
-	=======================================
-	
-	Return a knowledge-bank response only when the query matches exactly after
-	normalization. This is the fastest path in the KB execution flow.
-	
-	Process:
-	1. Normalize the user's query (lowercase, remove special chars, trim)
-	2. For each KB entry, get ALL candidates:
-	   - student_query (primary intent phrase)
-	   - alternate_queries (variants, typos, translations, etc.)
-	   └─ _entry_candidates() handles parsing alternate_queries into a list
-	3. For each candidate, normalize it the same way
-	4. If normalized candidate == normalized query: MATCH FOUND!
-	5. Render the response (e.g., replace {name} with user's actual name)
-	6. Return immediately (no LLM needed)
-	
-	Examples of candidates matched:
-	  KB Entry: student_query="Hi", alternate_queries="Hey,Hii"
-	  ├─ Candidate 1: "Hi"   → Match "hi" (normalized)
-	  ├─ Candidate 2: "Hey"  → Match "hey"
-	  └─ Candidate 3: "Hii"  → Match "hii" (even with typo)
-	
-	Timing: ~50ms (no LLM, simple normalization + loop)
-	"""
-	start = time.perf_counter()
-	entries = get_direct_response_entries()
-	query_norm = normalize_text(query)
-
-	# normalize_text strips all non-ASCII (including emojis), so a pure-emoji
-	# query produces query_norm="" which falsely equals any emoji-only alternate
-	# query (e.g. "👋" also normalizes to ""). Skip exact matching in this case
-	# and let the LLM stage handle it with full KB context.
-	if not query_norm:
-		return None
-
-	for entry in entries:
-		if not entry or not entry.get("is_active", 1):
-			continue
-
-		# Check ALL candidates: student_query + alternate_queries
-		for candidate in _entry_candidates(entry):
-			if normalize_text(candidate) != query_norm:
-				continue
-
-			answer = _render_response(entry.get("response", ""), user_profile=user_profile).strip()
-			timing_ms = int((time.perf_counter() - start) * 1000)
-			return {
-				"question": query,
-				"answer": answer,
-				"response_type": "knowledge_bank",
-				"user_context": "personalized" if user_profile else "general",
-				"metadata": {
-					"timings_ms": {
-						"knowledge_bank": timing_ms,
-						"processing_total": timing_ms,
-					},
-					"answer_source": "knowledge_bank_exact",
-					"knowledge_bank": {
-						"doctype": KB_DOCTYPE,
-						"name": entry.get("name"),
-						"title": entry.get("title"),
-						"category": entry.get("category"),
-						"subcategory": entry.get("subcategory"),
-						"student_query": entry.get("student_query"),
-						"matched_query": candidate,
-						"match_score": 1.0,
-					},
-				},
-			}
-
-	return None
 
 
 def get_entries_for_category(category: str, force_refresh: bool = False) -> List[Dict[str, Any]]:

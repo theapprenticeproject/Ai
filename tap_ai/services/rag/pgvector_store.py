@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import decimal
+import hashlib
 import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import date, datetime, time as dtime
 from typing import Any, Dict, List, Optional
 
 import frappe
 import psycopg2
+from langchain_openai import OpenAIEmbeddings
 from psycopg2.extras import RealDictCursor
 
 from tap_ai.infra.config import get_config
 from tap_ai.infra.sql_catalog import load_schema
 from tap_ai.services.kb.direct_response_bank import _parse_aliases, get_direct_response_entries
-from tap_ai.services.rag.pinecone_store import embed_documents_cached, embed_query_cached, _record_to_text
 from tap_ai.services.routing.doctype_profiler import route_by_similarity
 from tap_ai.services.sql.doctype_selector import pick_doctypes
 from tap_ai.utils.remote_db import execute_remote_query, execute_remote_query_paginated, get_remote_connection
@@ -27,6 +29,232 @@ _KB_NAMESPACE = "TAP Response Knowledge"
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
 _SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=8)
+
+#  OPTIMIZATION: Embedding caching (Phase 1)
+EMBEDDING_CACHE_TTL = 86400  # 24 hours
+
+_EMBEDDINGS = None
+_EMBEDDINGS_MODEL = None
+
+# Doctypes whose records share a natural grouping dimension.
+# Records are sorted by the field and up to max_size consecutive records
+# with the same field value are packed into one vector.
+# Doctypes NOT listed here get 1 record per vector.
+_SEMANTIC_GROUP_CONFIG: Dict[str, tuple] = {
+	# (order_by_field, max_records_per_vector)
+
+	# --- Relational / activity records ---
+	"Student":            ("grade", 8),
+	"Teacher":            ("school_id", 8),
+	"Student Assignment": ("assignment", 8),
+	"StudentQuizAttempt": ("quiz", 8),
+	"StudentReflection":  ("student", 6),
+	"ImgSubmission":      ("assign_id", 8),
+	"Performance":        ("enrollment", 8),
+	"Submission":         ("student_assignment", 8),
+	"LearningChoicePoint":("student", 6),
+	"LearningState":      ("student", 1),
+
+	# --- Content records grouped by subject / vertical ---
+	"Learning Objective": ("subject", 6),
+	"Assignment":         ("subject", 5),
+	"LearningUnit":       ("course_vertical", 5),
+	"Course Level":       ("vertical", 5),
+	"LearningStage":      ("course_level", 5),
+	"NoteContent":        ("note_type", 5),
+	"Unit":               ("course", 5),
+
+	# --- Child doctypes ---
+	"QuizOption":         ("question_id", 5),
+}
+
+
+def _embedding_max_tokens_per_request() -> int:
+	"""Safety budget below provider hard limit to avoid 400 max_tokens_per_request."""
+	try:
+		return int(get_config("embedding_max_tokens_per_request") or 240000)
+	except Exception:
+		return 240000
+
+
+def _embedding_max_chars_per_text() -> int:
+	"""Cap a single embedding input size; large docs are trimmed for stability."""
+	try:
+		return int(get_config("embedding_max_chars_per_text") or 24000)
+	except Exception:
+		return 24000
+
+
+def _estimate_tokens(text: str) -> int:
+	# Fast approximation for GPT tokenization.
+	return max(1, len(text or "") // 4)
+
+
+def _prepare_text_for_embedding(text: str) -> str:
+	max_chars = _embedding_max_chars_per_text()
+	if len(text) <= max_chars:
+		return text
+	# Keep head + tail to preserve topic and ending cues.
+	head = max_chars // 2
+	tail = max_chars - head
+	return text[:head] + "\n\n[TRUNCATED_FOR_EMBEDDING]\n\n" + text[-tail:]
+
+
+def _batch_uncached_payloads(payloads: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+	"""Split uncached texts so each embed_documents call stays under token budget."""
+	max_tokens = _embedding_max_tokens_per_request()
+	max_items = 64
+
+	batches: List[List[Dict[str, Any]]] = []
+	current: List[Dict[str, Any]] = []
+	current_tokens = 0
+
+	for item in payloads:
+		t = _estimate_tokens(item["embed_text"])
+		if current and (current_tokens + t > max_tokens or len(current) >= max_items):
+			batches.append(current)
+			current = []
+			current_tokens = 0
+
+		current.append(item)
+		current_tokens += t
+
+	if current:
+		batches.append(current)
+
+	return batches
+
+
+def _embedding_cache_key(text: str, model: str) -> str:
+	"""Generate cache key for embedding."""
+	return f"embedding:{model}:{hashlib.md5(text.encode()).hexdigest()}"
+
+
+def _emb() -> OpenAIEmbeddings:
+	global _EMBEDDINGS, _EMBEDDINGS_MODEL
+	api_key = get_config("openai_api_key")
+	model = get_config("embedding_model") or "text-embedding-3-small"
+	if not api_key:
+		raise RuntimeError("Missing openai_api_key in site_config.json")
+	if _EMBEDDINGS is None or _EMBEDDINGS_MODEL != model:
+		_EMBEDDINGS = OpenAIEmbeddings(model=model, api_key=api_key)
+		_EMBEDDINGS_MODEL = model
+	return _EMBEDDINGS
+
+
+def embed_query_cached(
+	q: str,
+	model: str = "text-embedding-3-small",
+	cache_ttl: int = EMBEDDING_CACHE_TTL,
+) -> List[float]:
+	"""Cache query embeddings."""
+	cache_key = _embedding_cache_key(q, model)
+
+	cached = frappe.cache().get(cache_key)
+	if cached:
+		return json.loads(cached)
+
+	emb = _emb()
+	vector = emb.embed_query(q)
+
+	frappe.cache().set(cache_key, json.dumps(vector), ex=cache_ttl)
+	return vector
+
+
+def embed_documents_cached(
+	texts: List[str],
+	model: str = "text-embedding-3-small",
+	cache_ttl: int = EMBEDDING_CACHE_TTL,
+) -> List[List[float]]:
+	"""Cache document embeddings."""
+	emb = _emb()
+	cached_vectors = []
+	uncached_payloads: List[Dict[str, Any]] = []
+
+	for i, text in enumerate(texts):
+		cache_key = _embedding_cache_key(text, model)
+		cached = frappe.cache().get(cache_key)
+		if cached:
+			if isinstance(cached, bytes):
+				cached = cached.decode("utf-8", errors="ignore")
+			cached_vectors.append((i, json.loads(cached)))
+		else:
+			uncached_payloads.append({
+				"idx": i,
+				"cache_key": cache_key,
+				"embed_text": _prepare_text_for_embedding(text),
+			})
+
+	if uncached_payloads:
+		for batch in _batch_uncached_payloads(uncached_payloads):
+			batch_texts = [x["embed_text"] for x in batch]
+			new_vectors = emb.embed_documents(batch_texts)
+
+			for i, item in enumerate(batch):
+				frappe.cache().set(item["cache_key"], json.dumps(new_vectors[i]), ex=cache_ttl)
+				cached_vectors.append((item["idx"], new_vectors[i]))
+
+	result = [None] * len(texts)
+	for idx, vec in cached_vectors:
+		result[idx] = vec
+
+	return result
+
+
+def _to_plain(v: Any) -> Any:
+	if v is None:
+		return None
+	if isinstance(v, (str, int, float, bool)):
+		return v
+	if isinstance(v, decimal.Decimal):
+		return float(v)
+	if isinstance(v, (datetime, date, dtime)):
+		return v.isoformat()
+	return str(v)
+
+
+def _record_to_text(
+	doctype: str,
+	row: Dict[str, Any],
+	meta_cache: Optional[Dict[str, Any]] = None,
+) -> str:
+	parts = []
+	meta = None
+	if meta_cache is not None:
+		meta = meta_cache.get(doctype)
+		if meta is None:
+			meta = frappe.get_meta(doctype)
+			meta_cache[doctype] = meta
+	else:
+		meta = frappe.get_meta(doctype)
+
+	title_field = meta.title_field
+	if title_field and row.get(title_field):
+		label = meta.get_field(title_field).label or title_field
+		parts.append(f"{label}: {row[title_field]}")
+
+	parts.append(f"DocType: {doctype}")
+	parts.append(f"ID: {row.get('name')}")
+
+	for k, v in row.items():
+		if k in ("name", title_field) or v in (None, ""):
+			continue
+		parts.append(f"{k}: {_to_plain(v)}")
+
+	return "\n".join(parts)
+
+
+def get_db_columns_for_doctype(doctype: str) -> List[str]:
+	try:
+		from tap_ai.utils.remote_db import get_remote_table_columns
+		return get_remote_table_columns(doctype) or []
+	except Exception:
+		# Fallback to local DB if remote fails
+		try:
+			desc = frappe.db.sql(f"DESCRIBE `tab{doctype}`", as_dict=True)
+			return [d["Field"] for d in desc]
+		except Exception:
+			return []
 
 
 def _pgvector_prereq_error(exc: Exception) -> RuntimeError:
@@ -337,12 +565,7 @@ def _upsert_rows(rows: List[Dict[str, Any]]) -> int:
 
 def upsert_doctype(doctype: str, since: Optional[str] = None, embed_batch: int = 100) -> Dict[str, Any]:
 	_ensure_schema()
-	sem_cfg = None
-	try:
-		from tap_ai.services.rag.pinecone_store import _SEMANTIC_GROUP_CONFIG
-		sem_cfg = _SEMANTIC_GROUP_CONFIG.get(doctype)
-	except Exception:
-		sem_cfg = None
+	sem_cfg = _SEMANTIC_GROUP_CONFIG.get(doctype)
 	table = f'tab{doctype}'
 	total_records = 0
 	buffer_rows: List[Dict[str, Any]] = []
@@ -490,6 +713,26 @@ def cli_upsert_all(
 	return result
 
 
+def cli_delete_namespace(doctype: str) -> Dict[str, Any]:
+	"""Delete all vectors for a single DocType namespace from pgvector.
+
+	Run this before re-upserting a DocType whose chunking strategy changed,
+	otherwise stale vectors with old IDs accumulate alongside new ones.
+
+	Example:
+	bench execute tap_ai.services.rag.pgvector_store.cli_delete_namespace --kwargs "{'doctype': 'QuizQuestion'}"
+	"""
+	_ensure_schema()
+	with get_remote_connection() as conn:
+		with conn.cursor() as cursor:
+			cursor.execute(f'DELETE FROM "{_VECTOR_TABLE}" WHERE namespace = %s', (doctype,))
+			deleted = cursor.rowcount
+		conn.commit()
+	result = {"namespace": doctype, "deleted": deleted}
+	print(f"[ok] Namespace '{doctype}' deleted from pgvector ({deleted} vectors).")
+	return result
+
+
 def upsert_kb_entries() -> Dict[str, Any]:
 	entries = get_direct_response_entries(force_refresh=True)
 	active = [entry for entry in entries if entry.get("is_active", 1)]
@@ -588,56 +831,3 @@ def sync_to_pgvector_on_update(doc, method):
 		frappe.log_error(f"Failed to queue pgvector sync on update for {doc.doctype}:{doc.name}: {e}")
 
 
-def cli_compare_backends(
-	queries: Optional[List[str]] = None,
-	k: int = 6,
-	route_top_n: int = 4,
-) -> Dict[str, Any]:
-	"""Compare Pinecone and pgvector search latency and top-K overlap.
-
-	Example:
-	bench execute tap_ai.services.rag.pgvector_store.cli_compare_backends \
-	  --kwargs "{'queries': ['What is financial literacy?', 'Summarize the arts activity on Zentangle'], 'k': 5}"
-	"""
-	from tap_ai.services.rag.pinecone_store import search_auto_namespaces as search_pinecone
-
-	default_queries = [
-		"What is financial literacy?",
-		"Summarize the arts activity on Zentangle",
-		"Explain the course about goal setting",
-	]
-	queries = queries or default_queries
-	results: List[Dict[str, Any]] = []
-	total_queries = len(queries)
-
-	for q_index, query in enumerate(queries, 1):
-		print(f"[compare] Query {q_index}/{total_queries}: {query}", flush=True)
-		row: Dict[str, Any] = {"query": query}
-		for backend_name, search_fn in (("pinecone", search_pinecone), ("pgvector", search_auto_namespaces)):
-			print(f"[compare]   running {backend_name}...", flush=True)
-			t0 = time.perf_counter()
-			search_result = search_fn(q=query, k=k, route_top_n=route_top_n)
-			elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
-			matches = search_result.get("matches") or []
-			match_keys = [f"{match.get('namespace')}::{match.get('id')}" for match in matches]
-			row[backend_name] = {
-				"ms": elapsed_ms,
-				"routed_doctypes": search_result.get("routed_doctypes") or [],
-				"top_ids": match_keys,
-				"top_scores": [round(float(match.get("score") or 0), 4) for match in matches],
-				"search_mode": search_result.get("search_mode"),
-				"namespace_timings_ms": search_result.get("namespace_timings_ms") or {},
-			}
-			print(f"[compare]   done {backend_name}: {elapsed_ms} ms", flush=True)
-		extra = set(row["pinecone"]["top_ids"]) ^ set(row["pgvector"]["top_ids"])
-		row["overlap"] = {
-			"shared_top_ids": len(set(row["pinecone"]["top_ids"]) & set(row["pgvector"]["top_ids"])),
-			"pinecone_only": len(set(row["pinecone"]["top_ids"]) - set(row["pgvector"]["top_ids"])),
-			"pgvector_only": len(set(row["pgvector"]["top_ids"]) - set(row["pinecone"]["top_ids"])),
-			"symmetric_diff": len(extra),
-		}
-		results.append(row)
-
-	output = {"k": k, "route_top_n": route_top_n, "results": results}
-	print(frappe.as_json(output, indent=2))
-	return output

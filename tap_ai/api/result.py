@@ -7,7 +7,7 @@ is not viable. Instead, the client polls in three sequential phases, each
 with a ~9-second wait and 200 ms poll interval:
 
     phase=router  → returns once routing decision is written to Redis
-    phase=search  → returns once Pinecone vector search completes
+    phase=search  → returns once pgvector vector search completes
     phase=answer  → returns once the final answer is synthesized
 
 Each phase response includes `phase_complete`, `next_phase`, and the
@@ -191,9 +191,6 @@ def _normalize_result(data: dict, request_id: str) -> dict:
     fallback_reason = data.get("fallback_reason")
     if fallback_reason is None:
         fallback_reason = metadata.get("fallback_reason")
-    if fallback_reason is None:
-        kb_probe = metadata.get("knowledge_bank_probe") if isinstance(metadata.get("knowledge_bank_probe"), dict) else {}
-        fallback_reason = kb_probe.get("fallback_reason")
 
     out = {
         "request_id": request_id,
@@ -256,8 +253,6 @@ def _normalize_router_result(data: dict, request_id: str) -> dict | None:
     tool = router_info.get("tool")
     if tool == "vector_search":
         out["next_phase"] = "search"
-    elif tool in ("text_to_sql", "knowledge_bank"):
-        out["next_phase"] = "answer"
     else:
         out["next_phase"] = "answer"
     out["status"] = "processing"

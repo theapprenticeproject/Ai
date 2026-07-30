@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Frappe](https://img.shields.io/badge/Framework-Frappe%2015-0089FF)
 ![OpenAI](https://img.shields.io/badge/LLM-OpenAI-412991?logo=openai&logoColor=white)
-![Pinecone](https://img.shields.io/badge/VectorDB-Pinecone-00B388)
+![pgvector](https://img.shields.io/badge/VectorDB-pgvector-336791?logo=postgresql&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/Queue-RabbitMQ-FF6600?logo=rabbitmq&logoColor=white)
 ![Redis](https://img.shields.io/badge/Cache-Redis-DC382D?logo=redis&logoColor=white)
 ![License](https://img.shields.io/badge/license-see%20license.txt-lightgrey)
@@ -43,10 +43,8 @@ Current deployment topology:
 
 | Engine | Handles | Example Queries |
 |---|---|---|
-| **Knowledge Bank** | Curated TAP responses, greetings, short support phrases | "Hi", "Who are you?", "I'm stuck" |
 | **Text-to-SQL** | Factual, structured data queries | "Show me my TAP activities" |
-| **Vector RAG** | Conceptual, semantic, summarization queries | "Explain my arts activity on creating Zentangle patterns" |
-| **Direct LLM** | Open-ended conversation with no KB match | Freeform supportive replies |
+| **Vector RAG** | Conceptual, semantic, summarization queries, and curated conversational replies (greetings, identity, support) served from the TAP Response Knowledge pgvector namespace | "Explain my arts activity on creating Zentangle patterns", "Hi", "Who are you?", "I'm stuck" |
 
 ### Key Features
 
@@ -54,13 +52,13 @@ Current deployment topology:
 |---|---|
 | Intelligent routing | LLM + regex fast-path selects the right engine per query |
 | Multi-turn conversations | Chat history stored in Redis per user/session |
-| Hybrid execution | KB → SQL → RAG → LLM with automatic fallback chain |
+| Hybrid execution | SQL → RAG automatic fallback chain |
 | Voice support | STT (Whisper) → LLM → TTS pipeline via RabbitMQ |
 | Async processing | RabbitMQ workers decouple API from execution |
 | Dynamic configuration | Per-deployment config via TAP LMS DocTypes |
 | Admin exclusions | DocType-level exclusion system for RAG indexing |
 | A/B experiment switches | `enable_doctype_profiler` and `enable_llm_router` flags for live latency experiments without code changes |
-| KB vector fallback | TAP Response Knowledge indexed in Pinecone; conversational queries that slip past regex are caught by cosine similarity |
+| Conversational replies via RAG | TAP Response Knowledge is indexed in pgvector like any other DocType; greetings/identity/support queries are routed there via the same cosine-similarity DocType routing as content queries |
 
 ### Technology Stack
 
@@ -70,7 +68,7 @@ Current deployment topology:
 | Framework | Frappe 15 (ERPNext) |
 | LLM | OpenAI GPT models |
 | Embeddings | OpenAI `text-embedding-3-small` |
-| Vector DB | Pinecone + pgvector |
+| Vector DB | pgvector (remote PostgreSQL) |
 | Database | Remote PostgreSQL (`data.evalix.xyz`) |
 | Message Queue | RabbitMQ (Pika) |
 | Caching | Redis (LLM responses, KB entries, chat history, routing profiles) |
@@ -87,12 +85,10 @@ The system's intelligence lies in its central router, which acts as a decision-m
 1. **Query Refinement:** Before any routing, the query is rewritten into a fully standalone question using the user's chat history. This resolves pronouns and follow-up references (e.g. "summarize the first one" → "summarize the video titled X") so the router and all downstream engines always receive a self-contained query. Greetings and identity queries are exempt from refinement as their meaning is always fixed.
 2. **Intelligent Routing:** The refined query is first checked against fast regex patterns (zero-LLM). On a miss, an LLM determines the intent.
 3. **Tool Selection:**
-  - For short, curated conversational intents that match the TAP response bank, it selects the **Knowledge Bank Tool**.
   - For factual, specific questions (e.g., "list all...", "how many..."), it selects the **Text-to-SQL Engine**.
-  - For conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain..."), it selects the **Vector RAG Engine**.
-  - For open-ended supportive conversation that does not fit the knowledge bank, it selects the **Direct LLM Tool**.
-4. **Execution & Fallback:** The chosen tool executes the query. If the knowledge bank misses or returns a low-confidence match, the system falls back to the Direct LLM tool. If SQL fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
-5. **Answer Synthesis:** The retrieved data or direct response is returned as a final, human-readable answer.
+  - For everything else — conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain...") as well as short conversational intents (greetings, sign-offs, identity, help/stuck replies) — it selects the **Vector RAG Engine**. Conversational intents are recognized by a zero-LLM regex fast path and routed straight there, skipping refinement and the LLM router; `TAP Response Knowledge` is indexed in pgvector so the DocType routing profiler resolves them via cosine similarity, same as any content query.
+4. **Execution & Fallback:** The chosen tool executes the query. If SQL fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
+5. **Answer Synthesis:** The retrieved data is returned as a final, human-readable answer.
 
 ### System Flow Diagram
 
@@ -123,21 +119,17 @@ graph TD
     end
 
     subgraph "Services"
-      KB["services/kb/direct_response_bank.py<br><b>Knowledge Bank</b>"]
         SQL["services/sql/sql_answerer.py<br><b>SQL Engine</b>"]
-        RAG["services/rag/rag_answerer.py<br><b>RAG Engine</b>"]
-      KBRouter["services/kb/kb_llm_router.py<br><b>KB LLM Fallback</b>"]
+        RAG["services/rag/rag_answerer.py<br><b>RAG Engine</b><br>(also serves TAP Response Knowledge<br>via the pgvector namespace)"]
     end
 
     subgraph "Cache Layer"
         RedisLLM[("Redis<br><b>LLM Response Cache</b><br>llm_client.py · TTL 1h")]
-        RedisKB[("Redis<br><b>KB Entries Cache</b><br>direct_response_bank.py · TTL 1h")]
         RedisHistory[("Redis<br><b>Chat History Cache</b><br>router.py")]
     end
 
     subgraph "Data Layer"
-      PostgresDB[(Remote PostgreSQL<br>data.evalix.xyz)]
-        PineconeDB[(Pinecone<br>Vector DB)]
+      PostgresDB[(Remote PostgreSQL<br>data.evalix.xyz<br>+ pgvector)]
     end
 
     User -->|Text or Voice| QueryAPI
@@ -152,23 +144,17 @@ graph TD
     LLMWorker -->|Follow-up or ambiguous| Refiner
     Refiner -->|Standalone refined query| FastPath
     Refiner <-->|Cache refined queries| RedisLLM
-    FastPath -->|Regex match: KB or SQL| KB
+    FastPath -->|Greeting / identity match| RAG
+    FastPath -->|SQL intent match| SQL
     FastPath -->|Regex miss| Router
     Router <-->|Cache routing decisions| RedisLLM
-    Router -->|Curated Match| KB
     Router -->|Factual| SQL
-    Router -->|Conceptual| RAG
-    Router -->|KB fallback| KBRouter
-
-    KB <-->|Read/Write KB entries| RedisKB
-    KB -->|Exact match hit| LLMWorker
-    KB -->|Miss / low confidence| KBRouter
-    KBRouter <-->|Cache LLM KB responses| RedisLLM
+    Router -->|Conceptual or conversational| RAG
 
     LLMWorker <-->|Read/Write chat history| RedisHistory
 
     SQL -->|SQL Query| PostgresDB
-    RAG -->|Vector Search| PineconeDB
+    RAG -->|pgvector Search| PostgresDB
 
     LLMWorker -->|Answer| TTSWorker
     TTSWorker -->|Audio File| PostgresDB
@@ -201,16 +187,25 @@ graph TD
     A[User Query + Chat History] --> B{LLM: Refine Query}
     B --> C["1. Embed Query"]
     C --> D["2. Cosine Similarity → DocType Routing"]
-    D --> E["3. Parallel Pinecone Search across namespaces"]
+    D --> E["3. Parallel pgvector Search across namespaces"]
     E --> F["4. context_preview from metadata"]
     F --> G[Rich Context Chunks]
 ```
 
-**DocType routing** uses pre-built embedding profiles stored in `DoctypeRoutingProfile` (Frappe doctype) rather than a per-query LLM call. The query embedding computed for Pinecone search is reused directly — zero extra latency. See [One-Time Setup](#-one-time-setup) for bootstrapping.
+**DocType routing** uses pre-built embedding profiles stored in `Doctype Routing Profile` (Frappe doctype) rather than a per-query LLM call. The query embedding computed for pgvector search is reused directly — zero extra latency. See [One-Time Setup](#-one-time-setup) for bootstrapping.
+
+Each DocType's profile actually holds **two** vectors, and routing takes the best of both:
+
+| Vector | Built from | Catches |
+|---|---|---|
+| `vector` (summary) | An LLM-written 3-4 sentence routing description, grounded in a sample of up to 300 real record titles | Broad, conceptual queries — "explain my arts activity", "what is financial literacy" |
+| `titles_vector` | A deduplicated, capped (≤500 items / ≤20,000 chars) list of the DocType's *actual* record titles/topics, embedded verbatim — no LLM paraphrase | Exact terminology present in the data that the LLM summary sampled past or paraphrased away — e.g. a specific quiz or course name |
+
+At query time `route_by_similarity()` scores each DocType as `max(dot(query, vector), dot(query, titles_vector))` — either vector can independently win a match, so a literal title hit isn't diluted by averaging against a summary that never mentions it, and vice versa. `TAP Response Knowledge` gets the same treatment: its `titles_vector` is built from every active entry's `student_query` + `alternate_queries` (e.g. "Hi", "Hey", "who are you"), so exact conversational phrases route with high confidence even though the hand-written KB summary is generic.
 
 ##### Chunking Strategy
 
-Vectors are built at index time by `pinecone_store.upsert_doctype`. There are three strategies:
+Vectors are built at index time by `pgvector_store.upsert_doctype`. There are three strategies:
 
 | Strategy | Applies to | Rationale |
 |---|---|---|
@@ -244,29 +239,17 @@ Vectors are built at index time by `pinecone_store.upsert_doctype`. There are th
 | **Child doctypes** | | |
 | `QuizOption` | `question_id` | 5 |
 
-Any DocType **not** listed above defaults to **1 record per vector**. New doctypes require no code change — they index at 1:1 automatically. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pinecone_store.py`.
+Any DocType **not** listed above defaults to **1 record per vector**. New doctypes require no code change — they index at 1:1 automatically. To enable semantic grouping for a new DocType, add one entry to `_SEMANTIC_GROUP_CONFIG` in `pgvector_store.py`.
 
 > **Re-indexing note:** After a chunking strategy change, delete the affected namespace first (to remove stale vectors with old IDs), then re-upsert:
 > ```bash
-> bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace --kwargs "{'doctype': 'MyDocType'}"
-> bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all --kwargs "{'doctypes': ['MyDocType']}"
+> bench execute tap_ai.services.rag.pgvector_store.cli_delete_namespace --kwargs "{'doctype': 'MyDocType'}"
+> bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all --kwargs "{'doctypes': ['MyDocType']}"
 > ```
 
-#### Knowledge Bank Tool: From Curated Phrase to Direct Answer
+#### TAP Response Knowledge: Curated Phrases via Vector Search
 
-This tool handles short, high-confidence conversational intents like greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns. It operates in two stages backed by Redis caching.
-
-```mermaid
-graph TD
-    A[User Query] --> B["Stage 1: Load KB entries<br>(Redis cache, TTL 1h)"]
-    B --> C["Normalize query + all KB candidates<br>(student_query + alternate_queries)"]
-    C --> D{Exact match<br>after normalization?}
-    D -->|Yes| E[Return stored TAP response<br>~50ms — no LLM]
-    D -->|No| F["Stage 2: kb_llm_router.py<br>Pass full KB context to LLM"]
-    F --> G{LLM: Match from KB<br>or generate answer?}
-    G -->|KB match| H[Return selected KB response]
-    G -->|No match| I[Return LLM-generated answer]
-```
+Short, high-confidence conversational intents (greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns) are no longer routed to a separate Knowledge Bank tool. `TAP Response Knowledge` is indexed in pgvector like any other DocType, so these queries flow through the same Vector RAG engine described above — the DocType routing profiler's cosine-similarity match sends them straight to the `TAP Response Knowledge` namespace. The only special-casing left is in the fast path: `match_fast_kb_unconditional()` (`routing_patterns.py`) still detects greetings/identity queries on the raw query and skips refinement (their meaning is fixed regardless of chat history) and the LLM router call, going straight to `vector_search`.
 
 ---
 
@@ -275,7 +258,7 @@ graph TD
 ```
 tap_ai/
 ├── __init__.py                          # Package initialization
-├── hooks.py                             # Frappe hooks — Pinecone sync + profile refresh for all allowlisted DocTypes
+├── hooks.py                             # Frappe hooks — pgvector sync + profile refresh for all allowlisted DocTypes
 ├── models.py                            # Shared Pydantic v2 models (UserProfile, Enrollment, ContentDetails)
 ├── modules.txt                          # Module declaration
 ├── patches.txt                          # Database migration patches
@@ -295,13 +278,12 @@ tap_ai/
 │   ├── __init__.py
 │   ├── rag/                             # Vector RAG engine
 │   │   ├── rag_answerer.py              # RAG answer synthesis (query refine → search → synthesize)
-│   │   └── pinecone_store.py            # Pinecone vector store (upsert, parallel search, auto-sync hooks)
+│   │   └── pgvector_store.py            # pgvector store (embeddings, upsert, parallel search, auto-sync hooks)
 │   ├── sql/                             # Text-to-SQL engine
 │   │   ├── sql_answerer.py              # SQL generation → execution → answer synthesis
 │   │   └── doctype_selector.py          # LLM-based DocType selector (fallback when profiles unavailable)
-│   ├── kb/                              # Knowledge Bank engine
-│   │   ├── direct_response_bank.py      # Exact-match KB lookup and Redis cache
-│   │   └── kb_llm_router.py             # LLM fallback when no exact KB match
+│   ├── kb/                              # TAP Response Knowledge data access
+│   │   └── direct_response_bank.py      # KB entry loading/caching; backs the pgvector KB index
 │   └── routing/                         # Router and fast-path patterns
 │       ├── router.py                    # Intelligent router (brain of system)
 │       ├── routing_patterns.py          # Regex fast-path patterns (zero-LLM routing)
@@ -321,8 +303,7 @@ tap_ai/
 │   ├── __init__.py
 │   ├── config.py                        # Centralized config loader
 │   ├── llm_client.py                    # Shared LLM client (singleton + Redis response cache)
-│   ├── sql_catalog.py                   # Schema catalog loader
-│   └── pinecone_index.py                # Pinecone index lifecycle
+│   └── sql_catalog.py                   # Schema catalog loader
 │
 ├── utils/                               # Utility functions
 │   ├── __init__.py
@@ -389,8 +370,7 @@ All runtime dependencies are in `requirements.txt`. Frappe is installed separate
 | `langchain-core` | ≥0.3.0 | `ChatPromptTemplate`, `StrOutputParser`, `JsonOutputParser`, `MessagesPlaceholder` |
 | `langchain-openai` | ≥0.1.17 | `ChatOpenAI` and `OpenAIEmbeddings` wrappers |
 | `pydantic` | ≥2.0 | Shared input/output models (`UserProfile`, `Enrollment`, `ContentDetails`) |
-| `pinecone` | latest | Vector database client for RAG retrieval |
-| `psycopg2-binary` | latest | PostgreSQL driver for remote DB access |
+| `psycopg2-binary` | latest | PostgreSQL driver for remote DB access + pgvector RAG retrieval |
 | `requests` | latest | HTTP client used by STT worker to download audio |
 | `loguru` | ≥0.7.2 | Structured logging across all services |
 | `tenacity` | ≥9.0.0 | Retry logic for transient LLM/network errors |
@@ -406,10 +386,9 @@ All runtime dependencies are in `requirements.txt`. Frappe is installed separate
 
 - Python 3.10+
 - Frappe bench installed
-- Remote PostgreSQL server reachable (`data.evalix.xyz`)
+- Remote PostgreSQL server reachable (`data.evalix.xyz`) with the `pgvector` extension available
 - RabbitMQ broker running
 - Redis server running
-- Pinecone account (for Vector RAG)
 - OpenAI API key
 
 ### Step 1: Install TAP AI App on Frappe
@@ -429,7 +408,7 @@ bench --site <site-name> install-app tap_ai
 bench pip install -r apps/tap_ai/requirements.txt
 
 # Or install key packages individually
-bench pip install langchain-openai pinecone psycopg2-binary pika redis
+bench pip install langchain-openai psycopg2-binary pika redis
 ```
 
 ### Step 3: Install Infrastructure
@@ -473,10 +452,6 @@ Edit your site's `site_config.json` file and add:
   "primary_llm_model": "gpt-4o-mini",
   "embedding_model": "text-embedding-3-small",
   
-  "pinecone_api_key": "pcn-your-pinecone-key-here",
-  "pinecone_index": "tap-ai-byo",
-  "rag_vector_backend": "pinecone",
-  
   "rabbitmq_url": "amqp://guest:guest@localhost:5672/",
   
   "redis_host": "localhost",
@@ -497,9 +472,7 @@ Edit your site's `site_config.json` file and add:
 | `primary_llm_model` | string | Primary LLM for routing and SQL | `gpt-4o-mini` |
 | `profiler_summary_model` | string | LLM used for DocType profile summary generation (one-time) | `gpt-4o` |
 | `embedding_model` | string | Model for embeddings | `text-embedding-3-small` |
-| `pinecone_api_key` | string | Pinecone authentication | Required |
-| `pinecone_index` | string | Pinecone index name | `tap-ai-byo` |
-| `rag_vector_backend` | string | RAG backend selector: `pinecone`, `pgvector`, or `both` | `pinecone` |
+| `embedding_dimension` | int | Vector dimension for the pgvector column (must match `embedding_model`) | `1536` |
 | `rabbitmq_url` | string | RabbitMQ connection URL | `amqp://guest:guest@localhost:5672/` |
 | `redis_host` | string | Redis hostname | `localhost` |
 | `redis_port` | int | Redis port | `6379` |
@@ -507,7 +480,7 @@ Edit your site's `site_config.json` file and add:
 | `max_context_length` | int | Max LLM context tokens | `2048` |
 | `vector_search_k` | int | Top-K vectors for RAG | `5` |
 | `max_response_tokens` | int | Max response tokens | `500` |
-| `rag_max_context_hits` | int | Max Pinecone hits used for context building | `6` |
+| `rag_max_context_hits` | int | Max pgvector hits used for context building | `6` |
 | `rag_synthesis_model` | string | LLM model for RAG answer synthesis | `gpt-4o-mini` |
 | `rag_synthesis_max_tokens` | int | Max tokens for RAG answer | `500` |
 | `enable_doctype_profiler` | bool | **A/B switch.** When `false`, bypasses cosine-similarity namespace routing and queries all allowlisted DocTypes — useful for latency experiments. | `true` |
@@ -519,9 +492,7 @@ Create `.env` file in frappe-bench:
 
 ```bash
 OPENAI_API_KEY=sk-your-key
-PINECONE_API_KEY=pcn-your-key
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
-RAG_VECTOR_BACKEND=pinecone
 ```
 
 > Note: A local `.env` file is included for convenience. Do not store production secrets in source control.
@@ -544,25 +515,13 @@ This creates `tap_ai_schema.json` needed by SQL and RAG engines.
 bench migrate
 ```
 
-This runs the new patch that creates the pgvector table and indexes in the remote PostgreSQL database.
+This runs the patches that create the pgvector table, indexes, and ANN index in the remote PostgreSQL database.
 
 If you see an error like `could not open extension control file ... vector.control`, the remote PostgreSQL host is missing the pgvector package. Install pgvector on that server first, then rerun the migration.
 
 For PostgreSQL 14, the package is usually `postgresql-14-pgvector`.
 
-### Step 3: Create Pinecone Index
-
-```bash
-bench execute tap_ai.infra.pinecone_index.cli_ensure_index
-```
-
-### Step 4: Populate Pinecone Index
-
-```bash
-bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
-```
-
-### Step 5: Populate pgvector in parallel
+### Step 3: Populate pgvector
 
 ```bash
 bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all
@@ -570,7 +529,7 @@ bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all
 
 ### Step 4: Bootstrap DocType Routing Profiles
 
-This generates a topic-aware embedding profile for each allowlisted DocType. The profiles are used to route queries to the right Pinecone namespaces without an LLM call at query time.
+This generates a topic-aware embedding profile for each allowlisted DocType. The profiles are used to route queries to the right pgvector namespaces without an LLM call at query time.
 
 ```bash
 bench execute tap_ai.services.routing.doctype_profiler.generate_all_profiles
@@ -578,7 +537,7 @@ bench execute tap_ai.services.routing.doctype_profiler.generate_all_profiles
 
 > **Local development only:** if running locally without a direct connection to the remote PostgreSQL, ensure the DB tunnel is open in a separate terminal before running this command. On the production server (`ai.evalix.xyz`) the remote DB is directly reachable and no tunnel is needed.
 
-This is a **one-time operation**. After that, the `doc_events` hook automatically refreshes any DocType's profile in the background whenever a record is inserted or updated. Profiles are stored in the `Doctype Routing Profile` Frappe doctype (persistent) and Redis (7-day TTL cache). A Redis flush does **not** trigger regeneration — profiles reload from the Frappe doctype in ~50ms.
+This is a **one-time operation**. After that, the `doc_events` hook automatically refreshes any DocType's profile in the background whenever a record is inserted, updated, **or deleted** — a deletion changes the DocType's title list too, so it needs the same `titles_vector` refresh as an insert/update. Profiles (summary + titles text/vectors) are stored in the `Doctype Routing Profile` Frappe doctype (persistent) and Redis (7-day TTL cache). A Redis flush does **not** trigger regeneration — profiles reload from the Frappe doctype in ~50ms. The same insert/update/delete refresh is wired for `TAP Response Knowledge` via `queue_kb_profile_refresh`, since its `titles_vector` is built from active entries' `student_query`/`alternate_queries`.
 
 **Re-generate a single DocType profile** (e.g. after a schema change):
 ```bash
@@ -591,26 +550,21 @@ bench execute tap_ai.services.routing.doctype_profiler.generate_doctype_profile 
 "profiler_summary_model": "gpt-4o"
 ```
 
-### Step 6: Bootstrap Knowledge Bank in both vector stores
+### Step 5: Bootstrap Knowledge Bank in pgvector
 
-The `TAP Response Knowledge` doctype is indexed in both Pinecone and pgvector so conversational queries that slip past the fast regex patterns can still be routed there via cosine similarity.
+The `TAP Response Knowledge` doctype is indexed in pgvector like any other content DocType, so conversational queries (greetings, identity, support) route straight there via the same cosine-similarity DocType routing as content queries.
 
 **5a. Generate the KB routing profile** (hand-crafted summary — no LLM needed):
 ```bash
 bench execute tap_ai.services.routing.doctype_profiler.generate_kb_profile
 ```
 
-**6b. Index all active KB entries into Pinecone:**
-```bash
-bench execute tap_ai.services.rag.pinecone_store.upsert_kb_entries
-```
-
-**6c. Index all active KB entries into pgvector:**
+**5b. Index all active KB entries into pgvector:**
 ```bash
 bench execute tap_ai.services.rag.pgvector_store.upsert_kb_entries
 ```
 
-After the initial load, every KB save/delete triggers incremental sync to both backends automatically via `doc_events` hooks — no manual re-run needed.
+After the initial load, every KB save/delete triggers incremental sync automatically via `doc_events` hooks — no manual re-run needed.
 
 ### A/B Experiment Switches
 
@@ -620,8 +574,6 @@ Two feature flags let you toggle major routing decisions live via `bench set-con
 |---|---|---|
 | `enable_doctype_profiler` | `true` | Skips cosine-similarity namespace routing; queries all 35 allowlisted DocTypes in parallel |
 | `enable_llm_router` | `true` | Queries that don't match fast regex go straight to `vector_search` with no LLM call |
-
-Set `rag_vector_backend` to `both` to merge Pinecone and pgvector search results in the RAG path for comparison.
 
 Both flags are surfaced in every response under `metadata.profiler_enabled` / `metadata.llm_router_enabled` so latency can be compared directly from the response JSON.
 
@@ -640,56 +592,29 @@ bench --site ai.all restart
 > - Profiler OFF → 3,916 ms vector search, 6,215 ms total (35 namespaces)
 > - **Profiler ON is ~2.7× faster end-to-end.** Keep it on in production.
 
-### Pinecone Maintenance Commands
+### pgvector Maintenance Commands
 
-**Re-index a single DocType in Pinecone:**
-```bash
-bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all \
-  --kwargs "{'doctypes': ['VideoClass']}"
-```
-
-**Re-index a single DocType in pgvector:**
+**Re-index a single DocType:**
 ```bash
 bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all \
   --kwargs "{'doctypes': ['VideoClass']}"
 ```
 
-**Run the pgvector migration directly:**
+**Run the pgvector schema migration directly:**
 ```bash
 bench execute tap_ai.services.rag.pgvector_store.cli_migrate_pgvector
 ```
 
-**Compare Pinecone vs pgvector on the same queries:**
-```bash
-bench execute tap_ai.services.rag.pgvector_store.cli_compare_backends \
-  --kwargs "{'queries': ['What is financial literacy?', 'Summarize the arts activity on Zentangle'], 'k': 5}"
-```
-
 **Delete a namespace before re-indexing** (required when a DocType's chunking strategy changes — otherwise stale vectors accumulate):
 ```bash
-bench execute tap_ai.services.rag.pinecone_store.cli_delete_namespace \
+bench execute tap_ai.services.rag.pgvector_store.cli_delete_namespace \
   --kwargs "{'doctype': 'QuizQuestion'}"
 ```
 
 Then re-upsert:
 ```bash
-bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all \
-  --kwargs "{'doctypes': ['QuizQuestion']}"
-```
-
-Do the same for pgvector if you changed chunking there:
-```bash
-bench execute tap_ai.services.rag.pgvector_store.cli_delete_namespace \
-  --kwargs "{'doctype': 'QuizQuestion'}"
 bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all \
   --kwargs "{'doctypes': ['QuizQuestion']}"
-```
-
-**Delete and recreate the entire index** (full reset):
-```bash
-bench execute tap_ai.infra.pinecone_index.cli_delete_index
-bench execute tap_ai.infra.pinecone_index.cli_ensure_index
-bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
 ```
 
 ---
@@ -1093,14 +1018,14 @@ rabbitmqctl status
 brew services start rabbitmq-server
 ```
 
-### Issue: "Pinecone index not found"
+### Issue: "pgvector extension not found" / vector search returns no results
 
 ```bash
-# Recreate index
-bench execute tap_ai.infra.pinecone_index.cli_ensure_index
+# Re-run the schema migration (creates the extension, table, and indexes)
+bench execute tap_ai.services.rag.pgvector_store.cli_migrate_pgvector
 
-# Upsert data
-bench execute tap_ai.services.rag.pinecone_store.cli_upsert_all
+# Re-populate vectors
+bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all
 ```
 
 ### Issue: Workers not processing messages

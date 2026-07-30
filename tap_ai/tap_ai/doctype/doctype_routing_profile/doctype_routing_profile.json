@@ -8,6 +8,8 @@
   "doctype_name",
   "summary",
   "vector",
+  "titles_text",
+  "titles_vector",
   "generated_at"
  ],
  "fields": [
@@ -28,6 +30,17 @@
    "fieldname": "vector",
    "fieldtype": "Long Text",
    "label": "Vector"
+  },
+  {
+   "fieldname": "titles_text",
+   "fieldtype": "Long Text",
+   "label": "Titles Text",
+   "description": "Deduplicated, capped list of actual record titles/topics used to embed titles_vector."
+  },
+  {
+   "fieldname": "titles_vector",
+   "fieldtype": "Long Text",
+   "label": "Titles Vector"
   },
   {
    "fieldname": "generated_at",
