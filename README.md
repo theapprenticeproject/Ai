@@ -192,7 +192,16 @@ graph TD
     F --> G[Rich Context Chunks]
 ```
 
-**DocType routing** uses pre-built embedding profiles stored in `DoctypeRoutingProfile` (Frappe doctype) rather than a per-query LLM call. The query embedding computed for pgvector search is reused directly — zero extra latency. See [One-Time Setup](#-one-time-setup) for bootstrapping.
+**DocType routing** uses pre-built embedding profiles stored in `Doctype Routing Profile` (Frappe doctype) rather than a per-query LLM call. The query embedding computed for pgvector search is reused directly — zero extra latency. See [One-Time Setup](#-one-time-setup) for bootstrapping.
+
+Each DocType's profile actually holds **two** vectors, and routing takes the best of both:
+
+| Vector | Built from | Catches |
+|---|---|---|
+| `vector` (summary) | An LLM-written 3-4 sentence routing description, grounded in a sample of up to 300 real record titles | Broad, conceptual queries — "explain my arts activity", "what is financial literacy" |
+| `titles_vector` | A deduplicated, capped (≤500 items / ≤20,000 chars) list of the DocType's *actual* record titles/topics, embedded verbatim — no LLM paraphrase | Exact terminology present in the data that the LLM summary sampled past or paraphrased away — e.g. a specific quiz or course name |
+
+At query time `route_by_similarity()` scores each DocType as `max(dot(query, vector), dot(query, titles_vector))` — either vector can independently win a match, so a literal title hit isn't diluted by averaging against a summary that never mentions it, and vice versa. `TAP Response Knowledge` gets the same treatment: its `titles_vector` is built from every active entry's `student_query` + `alternate_queries` (e.g. "Hi", "Hey", "who are you"), so exact conversational phrases route with high confidence even though the hand-written KB summary is generic.
 
 ##### Chunking Strategy
 
@@ -528,7 +537,7 @@ bench execute tap_ai.services.routing.doctype_profiler.generate_all_profiles
 
 > **Local development only:** if running locally without a direct connection to the remote PostgreSQL, ensure the DB tunnel is open in a separate terminal before running this command. On the production server (`ai.evalix.xyz`) the remote DB is directly reachable and no tunnel is needed.
 
-This is a **one-time operation**. After that, the `doc_events` hook automatically refreshes any DocType's profile in the background whenever a record is inserted or updated. Profiles are stored in the `Doctype Routing Profile` Frappe doctype (persistent) and Redis (7-day TTL cache). A Redis flush does **not** trigger regeneration — profiles reload from the Frappe doctype in ~50ms.
+This is a **one-time operation**. After that, the `doc_events` hook automatically refreshes any DocType's profile in the background whenever a record is inserted, updated, **or deleted** — a deletion changes the DocType's title list too, so it needs the same `titles_vector` refresh as an insert/update. Profiles (summary + titles text/vectors) are stored in the `Doctype Routing Profile` Frappe doctype (persistent) and Redis (7-day TTL cache). A Redis flush does **not** trigger regeneration — profiles reload from the Frappe doctype in ~50ms. The same insert/update/delete refresh is wired for `TAP Response Knowledge` via `queue_kb_profile_refresh`, since its `titles_vector` is built from active entries' `student_query`/`alternate_queries`.
 
 **Re-generate a single DocType profile** (e.g. after a schema change):
 ```bash

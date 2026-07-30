@@ -14,14 +14,17 @@ doc_events = {
 		"after_insert": [
 			"tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
             "tap_ai.services.rag.pgvector_store.sync_kb_entry_to_pgvector",
+            "tap_ai.services.routing.doctype_profiler.queue_kb_profile_refresh",
 		],
 		"after_update": [
 			"tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
             "tap_ai.services.rag.pgvector_store.sync_kb_entry_to_pgvector",
+            "tap_ai.services.routing.doctype_profiler.queue_kb_profile_refresh",
 		],
 		"after_delete": [
 			"tap_ai.services.kb.direct_response_bank.invalidate_kb_cache",
             "tap_ai.services.rag.pgvector_store.delete_kb_entry_from_pgvector",
+            "tap_ai.services.routing.doctype_profiler.queue_kb_profile_refresh",
 		],
 	}
 }
@@ -64,6 +67,9 @@ def _register_pgvector_sync_hooks():
                     ],
                     "after_update": [
                         "tap_ai.services.rag.pgvector_store.sync_to_pgvector_on_update",
+                        "tap_ai.services.routing.doctype_profiler.queue_profile_refresh",
+                    ],
+                    "after_delete": [
                         "tap_ai.services.routing.doctype_profiler.queue_profile_refresh",
                     ],
                 })

@@ -1,20 +1,29 @@
 """
 DocType Routing Profiler
 
-For each DocType in the allowlist:
-  1. Collect schema metadata (field names, labels, Select options) from Frappe meta
-  2. Fetch all record titles from the remote DB
-  3. One-time LLM call → 2-3 sentence summary of what the DocType stores
-  4. Embed the summary using the existing embedding infrastructure
-  5. Persist {summary, vector} to the DoctypeRoutingProfile Frappe doctype (survives Redis flush)
-  6. Cache in Redis for fast repeated access
+For each DocType in the allowlist, two complementary embeddings are built:
+
+  1. Summary vector — collect schema metadata + a sample of record titles,
+     ask the LLM for a 2-3 sentence routing summary, embed that summary.
+     Good at broad/conceptual queries, but the LLM only sees a sample and
+     paraphrases — exact vocabulary from the data can get lost.
+  2. Titles vector — embed a deduplicated, capped list of the ACTUAL record
+     titles/topics directly (no LLM paraphrase). Grounds routing in the
+     literal terms present in the data (e.g. an exact course/quiz name),
+     which the summary alone can miss.
+
+Both are persisted to the DoctypeRoutingProfile Frappe doctype (survives
+Redis flush) and cached in Redis for fast repeated access.
 
 At query time:
   - Reuse the already-computed pgvector query embedding (zero extra cost)
-  - Cosine similarity vs all stored DocType vectors → top-N namespaces to search
+  - Cosine similarity vs both vectors per DocType, score = max(summary, titles)
+  - Top-N DocTypes by that score → namespaces to search
 
 Auto-refresh:
-  - doc_events hook fires on any allowlisted DocType save → background job regenerates that DocType's profile
+  - doc_events hook fires on insert/update/delete of any allowlisted DocType
+    record (or TAP Response Knowledge entry) → background job regenerates
+    that DocType's profile, since a changed/removed record changes its titles.
 
 CLI bootstrap:
   bench execute tap_ai.services.routing.doctype_profiler.generate_all_profiles
@@ -128,6 +137,33 @@ def _fetch_all_titles(doctype: str) -> List[str]:
         return []
 
 
+# ── Titles text (for the second, literal embedding) ────────────────────────────
+
+_TITLES_TEXT_MAX_ITEMS = 500
+_TITLES_TEXT_MAX_CHARS = 20000
+
+
+def _build_titles_text(titles: List[str], max_items: int = _TITLES_TEXT_MAX_ITEMS, max_chars: int = _TITLES_TEXT_MAX_CHARS) -> str:
+    """
+    Dedupe and cap a raw titles list into embeddable text.
+
+    Unlike the LLM summary (a paraphrase), this text is embedded verbatim so
+    exact terms in it directly influence the titles_vector — capping keeps a
+    single embedding call from averaging out into noise over thousands of
+    disparate short strings.
+    """
+    seen: List[str] = []
+    for title in titles:
+        cleaned = (title or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.append(cleaned)
+        if len(seen) >= max_items:
+            break
+
+    text = "\n".join(seen)
+    return text[:max_chars]
+
+
 # ── LLM summary ────────────────────────────────────────────────────────────────
 
 def _generate_summary(doctype: str, schema_text: str, titles: List[str]) -> str:
@@ -162,16 +198,25 @@ def _generate_summary(doctype: str, schema_text: str, titles: List[str]) -> str:
 
 # ── Persistence ────────────────────────────────────────────────────────────────
 
-def _save_to_db(doctype: str, summary: str, vector: List[float]) -> None:
+def _save_to_db(
+    doctype: str,
+    summary: str,
+    vector: List[float],
+    titles_text: Optional[str] = None,
+    titles_vector: Optional[List[float]] = None,
+) -> None:
     """Upsert profile into DoctypeRoutingProfile doctype."""
     try:
         vector_json = json.dumps(vector)
+        titles_vector_json = json.dumps(titles_vector) if titles_vector else None
         now = datetime.now().isoformat()
 
         if frappe.db.exists(_PROFILE_DOCTYPE, doctype):
             doc = frappe.get_doc(_PROFILE_DOCTYPE, doctype)
             doc.summary = summary
             doc.vector = vector_json
+            doc.titles_text = titles_text or ""
+            doc.titles_vector = titles_vector_json
             doc.generated_at = now
             doc.save(ignore_permissions=True)
         else:
@@ -180,6 +225,8 @@ def _save_to_db(doctype: str, summary: str, vector: List[float]) -> None:
                 "doctype_name": doctype,
                 "summary": summary,
                 "vector": vector_json,
+                "titles_text": titles_text or "",
+                "titles_vector": titles_vector_json,
                 "generated_at": now,
             })
             doc.insert(ignore_permissions=True)
@@ -197,19 +244,33 @@ def _load_from_db(doctype: str) -> Optional[Dict[str, Any]]:
         doc = frappe.get_doc(_PROFILE_DOCTYPE, doctype)
         if not doc.vector:
             return None
-        return {
+        result: Dict[str, Any] = {
             "summary": doc.summary,
             "vector": json.loads(doc.vector),
         }
+        titles_vector_raw = getattr(doc, "titles_vector", None)
+        if titles_vector_raw:
+            try:
+                result["titles_vector"] = json.loads(titles_vector_raw)
+            except Exception:
+                pass
+        return result
     except Exception as e:
         logger.warning(f"[profiler] DB load failed for {doctype}: {e}")
         return None
 
 
-def _cache_in_redis(doctype: str, summary: str, vector: List[float]) -> None:
+def _cache_in_redis(
+    doctype: str,
+    summary: str,
+    vector: List[float],
+    titles_vector: Optional[List[float]] = None,
+) -> None:
     try:
-        payload = json.dumps({"summary": summary, "vector": vector})
-        frappe.cache().set(f"{_REDIS_PREFIX}{doctype}", payload, ex=_REDIS_TTL)
+        payload: Dict[str, Any] = {"summary": summary, "vector": vector}
+        if titles_vector:
+            payload["titles_vector"] = titles_vector
+        frappe.cache().set(f"{_REDIS_PREFIX}{doctype}", json.dumps(payload), ex=_REDIS_TTL)
     except Exception as e:
         logger.warning(f"[profiler] Redis cache write failed for {doctype}: {e}")
 
@@ -232,7 +293,8 @@ def generate_doctype_profile(doctype: str) -> bool:
     """
     Generate and persist a routing profile for a single DocType.
 
-    Steps: schema context → remote DB titles → LLM summary → embed → save to
+    Steps: schema context → remote DB titles → LLM summary → embed summary
+    + embed the raw titles list (separately) → save both vectors to
     DoctypeRoutingProfile + Redis.
 
     Safe to call in a background job.
@@ -251,11 +313,14 @@ def generate_doctype_profile(doctype: str) -> bool:
             logger.warning(f"[profiler] Empty summary for {doctype}, skipping")
             return False
 
-        vectors = embed_documents_cached([summary])
+        titles_text = _build_titles_text(titles)
+        embed_inputs = [summary, titles_text] if titles_text else [summary]
+        vectors = embed_documents_cached(embed_inputs)
         vector = vectors[0]
+        titles_vector = vectors[1] if titles_text else None
 
-        _save_to_db(doctype, summary, vector)
-        _cache_in_redis(doctype, summary, vector)
+        _save_to_db(doctype, summary, vector, titles_text=titles_text, titles_vector=titles_vector)
+        _cache_in_redis(doctype, summary, vector, titles_vector=titles_vector)
 
         logger.info(f"[profiler] Profile saved for {doctype} ({len(titles)} titles)")
         return True
@@ -293,12 +358,32 @@ _KB_PROFILE_SUMMARY = (
 )
 
 
+def _build_kb_titles_text() -> str:
+    """Titles text for the KB profile: every active entry's student_query + alternate_queries."""
+    from tap_ai.services.kb.direct_response_bank import _parse_aliases, get_direct_response_entries
+
+    entries = get_direct_response_entries(force_refresh=True)
+    phrases: List[str] = []
+    for entry in entries:
+        if not entry or not entry.get("is_active", 1):
+            continue
+        student_query = (entry.get("student_query") or "").strip()
+        if student_query:
+            phrases.append(student_query)
+        phrases.extend(_parse_aliases(entry.get("alternate_queries")))
+
+    return _build_titles_text(phrases)
+
+
 def generate_kb_profile() -> bool:
     """
     Generate and persist a routing profile for TAP Response Knowledge.
 
     Bypasses the standard LLM-summary flow because KB entries are short intent
     phrases — the hand-crafted _KB_PROFILE_SUMMARY produces a better routing vector.
+    The titles vector is still built normally, embedding every active entry's
+    student_query + alternate_queries verbatim (e.g. "Hi", "Hey") so exact
+    conversational phrases match directly, not just the summary's paraphrase.
 
     Run once after deploying KB pgvector indexing:
         bench execute tap_ai.services.routing.doctype_profiler.generate_kb_profile
@@ -307,10 +392,13 @@ def generate_kb_profile() -> bool:
 
     try:
         logger.info(f"[profiler] Generating KB profile for {_KB_DOCTYPE}")
-        vectors = embed_documents_cached([_KB_PROFILE_SUMMARY])
+        titles_text = _build_kb_titles_text()
+        embed_inputs = [_KB_PROFILE_SUMMARY, titles_text] if titles_text else [_KB_PROFILE_SUMMARY]
+        vectors = embed_documents_cached(embed_inputs)
         vector = vectors[0]
-        _save_to_db(_KB_DOCTYPE, _KB_PROFILE_SUMMARY, vector)
-        _cache_in_redis(_KB_DOCTYPE, _KB_PROFILE_SUMMARY, vector)
+        titles_vector = vectors[1] if titles_text else None
+        _save_to_db(_KB_DOCTYPE, _KB_PROFILE_SUMMARY, vector, titles_text=titles_text, titles_vector=titles_vector)
+        _cache_in_redis(_KB_DOCTYPE, _KB_PROFILE_SUMMARY, vector, titles_vector=titles_vector)
         logger.info(f"[profiler] KB profile saved for {_KB_DOCTYPE}")
         return True
     except Exception as e:
@@ -320,9 +408,10 @@ def generate_kb_profile() -> bool:
 
 # ── Load all vectors (routing entrypoint) ──────────────────────────────────────
 
-def get_profile_vectors() -> Dict[str, List[float]]:
+def get_profile_vectors() -> Dict[str, Dict[str, Any]]:
     """
-    Return {doctype: vector} for all allowlisted DocTypes plus TAP Response Knowledge.
+    Return {doctype: {"vector": [...], "titles_vector": [...] | None}} for all
+    allowlisted DocTypes plus TAP Response Knowledge.
 
     Priority: Redis → DoctypeRoutingProfile doctype → skip (profile not yet generated).
     Never blocks to regenerate — missing profiles fall back to LLM routing for that query.
@@ -335,21 +424,21 @@ def get_profile_vectors() -> Dict[str, List[float]]:
     if _KB_DOCTYPE not in doctypes:
         doctypes.append(_KB_DOCTYPE)
 
-    result: Dict[str, List[float]] = {}
+    result: Dict[str, Dict[str, Any]] = {}
 
     for doctype in doctypes:
         # 1. Redis hit
         cached = _get_from_redis(doctype)
         if cached:
-            result[doctype] = cached["vector"]
+            result[doctype] = {"vector": cached["vector"], "titles_vector": cached.get("titles_vector")}
             continue
 
         # 2. Frappe doctype fallback (fast — local SQL, ~1ms per row)
         db_profile = _load_from_db(doctype)
         if db_profile:
-            result[doctype] = db_profile["vector"]
+            result[doctype] = {"vector": db_profile["vector"], "titles_vector": db_profile.get("titles_vector")}
             # Repopulate Redis so next call is a cache hit
-            _cache_in_redis(doctype, db_profile["summary"], db_profile["vector"])
+            _cache_in_redis(doctype, db_profile["summary"], db_profile["vector"], titles_vector=db_profile.get("titles_vector"))
             continue
 
         # 3. Not yet generated — skip silently, caller falls back to LLM routing
@@ -360,9 +449,21 @@ def get_profile_vectors() -> Dict[str, List[float]]:
 
 # ── Cosine similarity routing ──────────────────────────────────────────────────
 
+def _dot(query_vector: List[float], vec: Optional[List[float]]) -> float:
+    if not vec:
+        return float("-inf")
+    return sum(a * b for a, b in zip(query_vector, vec))
+
+
 def route_by_similarity(query_vector: List[float], top_n: int = 4) -> List[str]:
     """
     Return top-N DocTypes by cosine similarity to the query vector.
+
+    Each DocType has two candidate vectors — an LLM-summary embedding (broad,
+    conceptual) and a titles embedding (literal record titles/topics). The
+    score is max(summary_score, titles_score): either signal can win a match
+    independently, so an exact term hit in titles isn't diluted by averaging
+    against a summary that may not mention it, and vice versa.
 
     OpenAI embeddings are L2-normalised so cosine similarity = dot product.
     Returns empty list if no profiles are available (caller falls back to LLM routing).
@@ -373,8 +474,8 @@ def route_by_similarity(query_vector: List[float], top_n: int = 4) -> List[str]:
         return []
 
     scores = [
-        (doctype, sum(a * b for a, b in zip(query_vector, vec)))
-        for doctype, vec in profiles.items()
+        (doctype, max(_dot(query_vector, profile.get("vector")), _dot(query_vector, profile.get("titles_vector"))))
+        for doctype, profile in profiles.items()
     ]
     scores.sort(key=lambda x: x[1], reverse=True)
     return [dt for dt, _ in scores[:top_n]]
@@ -385,7 +486,8 @@ def route_by_similarity(query_vector: List[float], top_n: int = 4) -> List[str]:
 def queue_profile_refresh(doc, method):
     """
     doc_events hook: enqueue a background profile regeneration whenever a
-    record in an allowlisted DocType is inserted or updated.
+    record in an allowlisted DocType is inserted, updated, or deleted — any of
+    these changes the DocType's title list, so the titles_vector needs a refresh.
     """
     try:
         frappe.enqueue(
@@ -397,6 +499,24 @@ def queue_profile_refresh(doc, method):
         )
     except Exception as e:
         frappe.log_error(f"[profiler] Failed to queue profile refresh for {doc.doctype}: {e}")
+
+
+def queue_kb_profile_refresh(doc, method):
+    """
+    doc_events hook: enqueue a background KB profile regeneration whenever a
+    TAP Response Knowledge entry is inserted, updated, or deleted — the KB
+    titles_vector is built from every active entry's student_query +
+    alternate_queries, so any of these changes the titles list.
+    """
+    try:
+        frappe.enqueue(
+            "tap_ai.services.routing.doctype_profiler.generate_kb_profile",
+            queue="long",
+            job_name="kb_profile_refresh",
+            deduplicate=True,
+        )
+    except Exception as e:
+        frappe.log_error(f"[profiler] Failed to queue KB profile refresh: {e}")
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
