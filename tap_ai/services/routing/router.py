@@ -25,10 +25,8 @@ from tap_ai.models import ContentDetails, UserProfile
 from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.services.sql.sql_answerer import answer_from_sql
 from tap_ai.services.rag.rag_answerer import answer_from_vector_search
-from tap_ai.services.kb.direct_response_bank import lookup_exact_direct_response
-from tap_ai.services.kb.kb_llm_router import verify_and_respond as verify_kb_and_respond
 from tap_ai.services.routing.routing_patterns import (
-    match_fast_kb, match_fast_kb_unconditional, match_fast_sql,
+    match_fast_kb_unconditional, match_fast_sql,
 )
 
 # ======================================================
@@ -38,30 +36,25 @@ from tap_ai.services.routing.routing_patterns import (
 ROUTER_PROMPT = """You are a query routing expert.
 
 Choose ONE tool:
-1. knowledge_bank - curated TAP response phrases and support snippets from the TAP Response Knowledge doctype
-2. text_to_sql - factual, structured data queries (list, count, show, filter)
-3. vector_search - conceptual, explanatory, summarization queries
+1. text_to_sql - factual, structured data queries (list, count, show, filter)
+2. vector_search - conceptual, explanatory, summarization queries, and short conversational intents (greetings, sign-offs, identity questions, acknowledgements, help/stuck replies, motivational or support replies) — these are served from the TAP Response Knowledge index.
 
 Routing hints:
-- Use knowledge_bank for short conversational intents that match curated categories such as greetings, sign-offs, identity questions, TAP program explanations, simple acknowledgements, gibberish or emoji spam, request phrases, help or stuck replies, submission help, and motivational or support replies.
 - Use text_to_sql for explicit data lookup from platform tables.
-- Use vector_search for semantic/content retrieval and summarization from indexed knowledge.
+- Use vector_search for everything else: semantic/content retrieval, summarization, and conversational/support replies from indexed knowledge.
 
 Return ONLY JSON:
 {
-    "tool": "knowledge_bank" or "text_to_sql" or "vector_search",
+    "tool": "text_to_sql" or "vector_search",
 }
 """
 
 
 def _fast_route(query: str) -> Optional[str]:
     """Fast pattern-based routing without LLM."""
-    if match_fast_kb(query):
-        return "knowledge_bank"
-    
     if match_fast_sql(query):
         return "text_to_sql"
-    
+
     return None
 
 
@@ -97,7 +90,7 @@ def choose_tool(query: str, user_context: Optional[str] = None) -> str:
         content = content.replace("```json", "").replace("```", "").strip()
         data = json.loads(content)
         tool = data.get("tool")
-        if tool in ("knowledge_bank", "text_to_sql", "vector_search"):
+        if tool in ("text_to_sql", "vector_search"):
             return tool
     except Exception as e:
         frappe.log_error(f"Router failed: {e}")
@@ -201,12 +194,14 @@ def process_query(
         content_str = f"Content: {content_details.title or 'Unknown'}"
         user_context = f"{user_context}\n{content_str}" if user_context else content_str
 
-    # -------- Query refinement (skip if already refined or unconditional KB) --------
+    # -------- Query refinement (skip if already refined or unconditional KB intent) --------
     if not refined_query:
         if match_fast_kb_unconditional(query):
-            # Greetings / sign-offs / identity — refinement only corrupts them.
+            # Greetings / sign-offs / identity — fixed meaning, refinement only corrupts
+            # them. Skip the LLM router too; TAP Response Knowledge is indexed in
+            # pgvector so vector_search resolves these directly.
             refined_query = query
-            primary_tool = "knowledge_bank"
+            primary_tool = "vector_search"
         else:
             refined_query = query
             try:
@@ -228,67 +223,6 @@ def process_query(
     result = {}
 
     # -------- Execute --------
-    if primary_tool == "knowledge_bank":
-        """
-        KNOWLEDGE BANK EXECUTION FLOW
-        =============================
-        
-        The knowledge_bank tool follows a two-stage process:
-        
-        STAGE 1: EXACT MATCH LOOKUP (FAST PATH)
-        ──────────────────────────────────────
-        lookup_exact_direct_response(query) checks if the user's query matches
-        any KB entry after normalization. This includes:
-          - student_query field
-          - alternate_queries field (all variants)
-        
-        If found: Returns KB response immediately (~50ms, no LLM)
-        
-        Examples:
-          Query: "Hi"           → Matches "hi" (student_query)
-          Query: "Hello there"  → Matches "hello" (alternate_query)
-          Query: "Goodbye"      → Matches "bye" (alternate_query)
-        
-        STAGE 2: LLM FALLBACK (REGEX MATCH BUT NO EXACT MATCH)
-        ──────────────────────────────────────────────────────
-        If exact match fails, verify_kb_and_respond() is called.
-        This loads the ENTIRE active KB and passes it to the LLM to:
-          1. Check if the query semantically matches any KB entry
-          2. Return the matched KB response if found
-          3. Generate a custom answer if no KB match exists
-        
-        The LLM has full context: match_queries + responses for all KB entries
-        This ensures regex-matched queries (e.g., "hello" matching regex) don't
-        get dropped if alternate queries weren't explicitly added to the KB.
-        
-        Examples:
-          Regex Match: "heyyyy"      → Exact: NO → LLM: Matches "hey" intent → KB Response
-          Regex Match: "gud morning" → Exact: NO → LLM: Matches "good morning" → KB Response
-        """
-        
-        # STAGE 1: Try exact match (fast path, no LLM)
-        exact_result = lookup_exact_direct_response(
-            query=query,
-            user_profile=user_profile,
-        )
-        if exact_result:
-            result = exact_result
-        else:
-            # STAGE 2: LLM selection with full KB context (fallback)
-            result = verify_kb_and_respond(
-                query=query,
-                user_profile=user_profile,
-                chat_history=chat_history,
-            )
-
-        processing_ms = int((time.perf_counter() - process_start) * 1000)
-        timings = {"processing_total": processing_ms}
-        if routing_ms:
-            timings["route_ms"] = routing_ms
-        out = _with_meta(result, query, "knowledge_bank", False, timing_ms=timings)
-        out["metadata"]["llm_router_enabled"] = llm_router_enabled
-        return out
-
     if primary_tool == "text_to_sql":
         result = answer_from_sql(
             query,

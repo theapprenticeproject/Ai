@@ -7,9 +7,10 @@ query-to-answer pipeline:
 
     1. Refine the query using conversation history (follow-up resolution)
     2. Route to the appropriate engine via LLM or fast regex patterns:
-           knowledge_bank  → direct KB lookup + optional LLM fallback
            text_to_sql     → SQL generation against remote PostgreSQL
            vector_search   → two-step: retrieve (pgvector_store) then synthesize
+                             (also serves greetings/identity/support replies —
+                             TAP Response Knowledge is indexed in pgvector)
     3. Save the answer and updated chat history to Redis
     4. For voice requests: forward to audio_tts_queue (if TTS enabled)
        or store text answer directly
@@ -40,7 +41,7 @@ from tap_ai.services.rag.rag_answerer import (
 )
 from tap_ai.utils.query_refiner import refine_query_with_history
 from tap_ai.utils.mq import publish_to_queue
-from tap_ai.services.routing.routing_patterns import KB_CONTENT_WORDS, match_fast_kb_unconditional, match_fast_sql
+from tap_ai.services.routing.routing_patterns import match_fast_kb_unconditional, match_fast_sql
 
 
 def _tts_enabled_for_voice() -> bool:
@@ -81,7 +82,7 @@ def _apply_end_to_end_timing(state_dict: dict, metadata: dict) -> dict:
     total_e2e_ms = int(time.time() * 1000) - int(started_at_ms)
     state_timings = (state_dict.get("metadata") or {}).get("timings_ms") or {}
     timings_ms = {**state_timings, **dict(metadata.get("timings_ms") or {})}
-    processing_ms = timings_ms.get("processing_total") or timings_ms.get("knowledge_bank") or timings_ms.get("direct_llm") or timings_ms.get("total")
+    processing_ms = timings_ms.get("processing_total") or timings_ms.get("direct_llm") or timings_ms.get("total")
     stt_ms = state_dict.get("stt_timing_ms") or timings_ms.get("stt") or 0
     router_ms = state_dict.get("router_timing_ms") or timings_ms.get("route_ms") or timings_ms.get("router_precheck") or 0
 
@@ -175,13 +176,6 @@ def _finalize_voice_answer(
 
 
 def _derive_answer_source(tool: str, metadata: dict) -> str:
-    if metadata.get("answer_source") == "knowledge_bank_exact":
-        return "knowledge_bank_exact"
-    decision = metadata.get("decision")
-    if decision == "kb_exact":
-        return "kb_llm_selected"
-    if decision == "llm_generated":
-        return "llm_generated"
     if tool == "text_to_sql":
         return "sql_fallback_rag" if metadata.get("fallback_used") else "sql"
     if tool == "vector_search":
@@ -204,7 +198,6 @@ def _log_query(
     """Write one row to AI Query Log for analytics. Never raises."""
     try:
         timings = metadata.get("timings_ms") or {}
-        kb_meta = metadata.get("knowledge_bank") or {}
         answer_source = _derive_answer_source(tool or "", metadata)
 
         frappe.get_doc({
@@ -220,8 +213,6 @@ def _log_query(
             "timing_ms": timings.get("end_to_end") or timings.get("total"),
             "route_ms": timings.get("route_ms"),
             "processing_ms": timings.get("processing") or timings.get("processing_total"),
-            "matched_kb_entry": kb_meta.get("name"),
-            "matched_kb_category": kb_meta.get("category"),
             "fallback_used": 1 if metadata.get("fallback_used") else 0,
             "status": status,
             "error": (error or "")[:500] if error else None,
@@ -382,11 +373,13 @@ class LLMWorker:
             refine_ms = 0
             route_ms = 0
             if match_fast_kb_unconditional(query):
-                # Greetings / sign-offs / identity — context enrichment would corrupt them.
-                primary_tool = "knowledge_bank"
+                # Greetings / sign-offs / identity — fixed meaning, context enrichment
+                # would corrupt them. Skip refinement and the LLM router; TAP Response
+                # Knowledge is indexed in pgvector so vector_search resolves these directly.
+                primary_tool = "vector_search"
                 refined_query = query
             else:
-                # Refine for all non-KB paths (text_to_sql and vector_search).
+                # Refine for all other paths (text_to_sql and vector_search).
                 refined_query = query
                 refine_start = time.perf_counter()
                 try:
@@ -403,10 +396,6 @@ class LLMWorker:
                     route_start = time.perf_counter()
                     primary_tool = choose_tool(refined_query)
                     route_ms = int((time.perf_counter() - route_start) * 1000)
-
-            if primary_tool == "knowledge_bank" and any(w in refined_query.lower() for w in KB_CONTENT_WORDS):
-                logger.debug(f"KB guard triggered — rerouting '{refined_query[:60]}' to vector_search")
-                primary_tool = "vector_search"
 
             state_dict = _load_request_state(request_id)
             state_dict["tool"] = primary_tool

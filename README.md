@@ -43,10 +43,8 @@ Current deployment topology:
 
 | Engine | Handles | Example Queries |
 |---|---|---|
-| **Knowledge Bank** | Curated TAP responses, greetings, short support phrases | "Hi", "Who are you?", "I'm stuck" |
 | **Text-to-SQL** | Factual, structured data queries | "Show me my TAP activities" |
-| **Vector RAG** | Conceptual, semantic, summarization queries | "Explain my arts activity on creating Zentangle patterns" |
-| **Direct LLM** | Open-ended conversation with no KB match | Freeform supportive replies |
+| **Vector RAG** | Conceptual, semantic, summarization queries, and curated conversational replies (greetings, identity, support) served from the TAP Response Knowledge pgvector namespace | "Explain my arts activity on creating Zentangle patterns", "Hi", "Who are you?", "I'm stuck" |
 
 ### Key Features
 
@@ -54,13 +52,13 @@ Current deployment topology:
 |---|---|
 | Intelligent routing | LLM + regex fast-path selects the right engine per query |
 | Multi-turn conversations | Chat history stored in Redis per user/session |
-| Hybrid execution | KB → SQL → RAG → LLM with automatic fallback chain |
+| Hybrid execution | SQL → RAG automatic fallback chain |
 | Voice support | STT (Whisper) → LLM → TTS pipeline via RabbitMQ |
 | Async processing | RabbitMQ workers decouple API from execution |
 | Dynamic configuration | Per-deployment config via TAP LMS DocTypes |
 | Admin exclusions | DocType-level exclusion system for RAG indexing |
 | A/B experiment switches | `enable_doctype_profiler` and `enable_llm_router` flags for live latency experiments without code changes |
-| KB vector fallback | TAP Response Knowledge indexed in pgvector; conversational queries that slip past regex are caught by cosine similarity |
+| Conversational replies via RAG | TAP Response Knowledge is indexed in pgvector like any other DocType; greetings/identity/support queries are routed there via the same cosine-similarity DocType routing as content queries |
 
 ### Technology Stack
 
@@ -87,12 +85,10 @@ The system's intelligence lies in its central router, which acts as a decision-m
 1. **Query Refinement:** Before any routing, the query is rewritten into a fully standalone question using the user's chat history. This resolves pronouns and follow-up references (e.g. "summarize the first one" → "summarize the video titled X") so the router and all downstream engines always receive a self-contained query. Greetings and identity queries are exempt from refinement as their meaning is always fixed.
 2. **Intelligent Routing:** The refined query is first checked against fast regex patterns (zero-LLM). On a miss, an LLM determines the intent.
 3. **Tool Selection:**
-  - For short, curated conversational intents that match the TAP response bank, it selects the **Knowledge Bank Tool**.
   - For factual, specific questions (e.g., "list all...", "how many..."), it selects the **Text-to-SQL Engine**.
-  - For conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain..."), it selects the **Vector RAG Engine**.
-  - For open-ended supportive conversation that does not fit the knowledge bank, it selects the **Direct LLM Tool**.
-4. **Execution & Fallback:** The chosen tool executes the query. If the knowledge bank misses or returns a low-confidence match, the system falls back to the Direct LLM tool. If SQL fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
-5. **Answer Synthesis:** The retrieved data or direct response is returned as a final, human-readable answer.
+  - For everything else — conceptual, open-ended, or summarization questions (e.g., "summarize...", "explain...") as well as short conversational intents (greetings, sign-offs, identity, help/stuck replies) — it selects the **Vector RAG Engine**. Conversational intents are recognized by a zero-LLM regex fast path and routed straight there, skipping refinement and the LLM router; `TAP Response Knowledge` is indexed in pgvector so the DocType routing profiler resolves them via cosine similarity, same as any content query.
+4. **Execution & Fallback:** The chosen tool executes the query. If SQL fails to produce a satisfactory answer, the system automatically falls back to the Vector RAG engine as a safety net.
+5. **Answer Synthesis:** The retrieved data is returned as a final, human-readable answer.
 
 ### System Flow Diagram
 
@@ -123,15 +119,12 @@ graph TD
     end
 
     subgraph "Services"
-      KB["services/kb/direct_response_bank.py<br><b>Knowledge Bank</b>"]
         SQL["services/sql/sql_answerer.py<br><b>SQL Engine</b>"]
-        RAG["services/rag/rag_answerer.py<br><b>RAG Engine</b>"]
-      KBRouter["services/kb/kb_llm_router.py<br><b>KB LLM Fallback</b>"]
+        RAG["services/rag/rag_answerer.py<br><b>RAG Engine</b><br>(also serves TAP Response Knowledge<br>via the pgvector namespace)"]
     end
 
     subgraph "Cache Layer"
         RedisLLM[("Redis<br><b>LLM Response Cache</b><br>llm_client.py · TTL 1h")]
-        RedisKB[("Redis<br><b>KB Entries Cache</b><br>direct_response_bank.py · TTL 1h")]
         RedisHistory[("Redis<br><b>Chat History Cache</b><br>router.py")]
     end
 
@@ -151,18 +144,12 @@ graph TD
     LLMWorker -->|Follow-up or ambiguous| Refiner
     Refiner -->|Standalone refined query| FastPath
     Refiner <-->|Cache refined queries| RedisLLM
-    FastPath -->|Regex match: KB or SQL| KB
+    FastPath -->|Greeting / identity match| RAG
+    FastPath -->|SQL intent match| SQL
     FastPath -->|Regex miss| Router
     Router <-->|Cache routing decisions| RedisLLM
-    Router -->|Curated Match| KB
     Router -->|Factual| SQL
-    Router -->|Conceptual| RAG
-    Router -->|KB fallback| KBRouter
-
-    KB <-->|Read/Write KB entries| RedisKB
-    KB -->|Exact match hit| LLMWorker
-    KB -->|Miss / low confidence| KBRouter
-    KBRouter <-->|Cache LLM KB responses| RedisLLM
+    Router -->|Conceptual or conversational| RAG
 
     LLMWorker <-->|Read/Write chat history| RedisHistory
 
@@ -251,21 +238,9 @@ Any DocType **not** listed above defaults to **1 record per vector**. New doctyp
 > bench execute tap_ai.services.rag.pgvector_store.cli_upsert_all --kwargs "{'doctypes': ['MyDocType']}"
 > ```
 
-#### Knowledge Bank Tool: From Curated Phrase to Direct Answer
+#### TAP Response Knowledge: Curated Phrases via Vector Search
 
-This tool handles short, high-confidence conversational intents like greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns. It operates in two stages backed by Redis caching.
-
-```mermaid
-graph TD
-    A[User Query] --> B["Stage 1: Load KB entries<br>(Redis cache, TTL 1h)"]
-    B --> C["Normalize query + all KB candidates<br>(student_query + alternate_queries)"]
-    C --> D{Exact match<br>after normalization?}
-    D -->|Yes| E[Return stored TAP response<br>~50ms — no LLM]
-    D -->|No| F["Stage 2: kb_llm_router.py<br>Pass full KB context to LLM"]
-    F --> G{LLM: Match from KB<br>or generate answer?}
-    G -->|KB match| H[Return selected KB response]
-    G -->|No match| I[Return LLM-generated answer]
-```
+Short, high-confidence conversational intents (greetings, acknowledgements, simple help requests, identity questions, and other curated TAP response patterns) are no longer routed to a separate Knowledge Bank tool. `TAP Response Knowledge` is indexed in pgvector like any other DocType, so these queries flow through the same Vector RAG engine described above — the DocType routing profiler's cosine-similarity match sends them straight to the `TAP Response Knowledge` namespace. The only special-casing left is in the fast path: `match_fast_kb_unconditional()` (`routing_patterns.py`) still detects greetings/identity queries on the raw query and skips refinement (their meaning is fixed regardless of chat history) and the LLM router call, going straight to `vector_search`.
 
 ---
 
@@ -298,9 +273,8 @@ tap_ai/
 │   ├── sql/                             # Text-to-SQL engine
 │   │   ├── sql_answerer.py              # SQL generation → execution → answer synthesis
 │   │   └── doctype_selector.py          # LLM-based DocType selector (fallback when profiles unavailable)
-│   ├── kb/                              # Knowledge Bank engine
-│   │   ├── direct_response_bank.py      # Exact-match KB lookup and Redis cache
-│   │   └── kb_llm_router.py             # LLM fallback when no exact KB match
+│   ├── kb/                              # TAP Response Knowledge data access
+│   │   └── direct_response_bank.py      # KB entry loading/caching; backs the pgvector KB index
 │   └── routing/                         # Router and fast-path patterns
 │       ├── router.py                    # Intelligent router (brain of system)
 │       ├── routing_patterns.py          # Regex fast-path patterns (zero-LLM routing)
@@ -569,7 +543,7 @@ bench execute tap_ai.services.routing.doctype_profiler.generate_doctype_profile 
 
 ### Step 5: Bootstrap Knowledge Bank in pgvector
 
-The `TAP Response Knowledge` doctype is indexed in pgvector so conversational queries that slip past the fast regex patterns can still be routed there via cosine similarity.
+The `TAP Response Knowledge` doctype is indexed in pgvector like any other content DocType, so conversational queries (greetings, identity, support) route straight there via the same cosine-similarity DocType routing as content queries.
 
 **5a. Generate the KB routing profile** (hand-crafted summary — no LLM needed):
 ```bash
