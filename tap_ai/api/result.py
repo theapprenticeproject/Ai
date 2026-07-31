@@ -1,22 +1,22 @@
 # tap_ai/api/result.py
 """
-Three-phase result polling endpoint.
+Result polling endpoint.
 
-Glific workflows have a hard 10-second HTTP timeout, so a single long-poll
-is not viable. Instead, the client polls in three sequential phases, each
-with a ~9-second wait and 200 ms poll interval:
+Glific workflows have a hard 10-second HTTP timeout, so the client no longer
+manages its own wait/retry loop. Each call blocks internally (fixed wait
+window, fine-grained poll interval) until the requested phase is done, and
+always returns a conclusive status — success or failed. There is no
+"processing" status and no wait_seconds/poll_interval_ms client controls:
+if a phase doesn't finish inside its internal window, that call reports
+failed (timeout) rather than asking the caller to poll again.
 
     phase=router  → returns once routing decision is written to Redis
     phase=search  → returns once pgvector vector search completes
     phase=answer  → returns once the final answer is synthesized
 
-Each phase response includes `phase_complete`, `next_phase`, and the
-full normalized result envelope so the caller can display intermediate
-progress (e.g. "thinking…", "searching knowledge…").
-
 Endpoint:
     GET /api/method/tap_ai.api.result.result
-    Params: request_id, phase (router|search|answer), wait_seconds, poll_interval_ms
+    Params: request_id, phase (router|search|answer)
 """
 
 import frappe
@@ -25,14 +25,10 @@ import time
 from loguru import logger
 
 
-MAX_WAIT_SECONDS = 55
-MIN_POLL_INTERVAL_MS = 100
-MAX_POLL_INTERVAL_MS = 2000
+TEXT_WAIT_SECONDS = 8
+VOICE_WAIT_SECONDS = 9
+POLL_INTERVAL_MS = 200
 
-AUTO_TEXT_WAIT_SECONDS = 8
-AUTO_VOICE_WAIT_SECONDS = 9
-AUTO_TEXT_POLL_INTERVAL_MS = 300
-AUTO_VOICE_POLL_INTERVAL_MS = 500
 VECTOR_SEARCH_DONE_STATES = {
     "vector_search_success",
     "vector_search_failed",
@@ -61,36 +57,8 @@ def _close_http_connection() -> None:
         pass
 
 
-def _to_int(value, default: int, min_value: int, max_value: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(min(parsed, max_value), min_value)
-
-
-def _resolve_wait_seconds(wait_seconds, is_voice: bool) -> int:
-    if wait_seconds is None or wait_seconds == "":
-        auto_wait = AUTO_VOICE_WAIT_SECONDS if is_voice else AUTO_TEXT_WAIT_SECONDS
-        return _to_int(auto_wait, default=0, min_value=0, max_value=MAX_WAIT_SECONDS)
-    return _to_int(wait_seconds, default=0, min_value=0, max_value=MAX_WAIT_SECONDS)
-
-
-def _resolve_poll_interval_ms(poll_interval_ms, is_voice: bool) -> int:
-    if poll_interval_ms is None or poll_interval_ms == "":
-        auto_interval = AUTO_VOICE_POLL_INTERVAL_MS if is_voice else AUTO_TEXT_POLL_INTERVAL_MS
-        return _to_int(
-            auto_interval,
-            default=500,
-            min_value=MIN_POLL_INTERVAL_MS,
-            max_value=MAX_POLL_INTERVAL_MS,
-        )
-    return _to_int(
-        poll_interval_ms,
-        default=500,
-        min_value=MIN_POLL_INTERVAL_MS,
-        max_value=MAX_POLL_INTERVAL_MS,
-    )
+def _phase_wait_seconds(is_voice: bool) -> int:
+    return VOICE_WAIT_SECONDS if is_voice else TEXT_WAIT_SECONDS
 
 
 def _is_voice_response(data: dict, request_id: str) -> bool:
@@ -136,6 +104,16 @@ def _empty_result(request_id: str, status: str = "failed", error: str | None = N
         "timing_ms": None,
         "error": error,
     }
+
+
+def _timeout_result(out: dict, phase: str) -> dict:
+    """Convert an in-progress normalized result into a conclusive failed/timeout result."""
+    out["phase"] = phase
+    out["phase_complete"] = True
+    out["status"] = "failed"
+    out["raw_status"] = out.get("raw_status") or "timeout"
+    out["error"] = out.get("error") or f"Timed out waiting for {phase} to complete"
+    return out
 
 
 def _safe_load_cache_payload(cached) -> tuple[dict | None, str | None]:
@@ -255,11 +233,11 @@ def _normalize_router_result(data: dict, request_id: str) -> dict | None:
         out["next_phase"] = "search"
     else:
         out["next_phase"] = "answer"
-    out["status"] = "processing"
+    out["status"] = "success"
     out["answer"] = None
     out["answer_text"] = None
     out["router_decision"] = router_info
-    
+
     # Override timing_ms with router-specific timing from metadata.
     # Prefer the explicit router timing, but fall back to alternate fields when needed.
     metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
@@ -271,7 +249,7 @@ def _normalize_router_result(data: dict, request_id: str) -> dict | None:
         router_timing = data.get("router_timing_ms")
     if router_timing is not None:
         out["timing_ms"] = router_timing
-    
+
     return out
 
 
@@ -302,21 +280,35 @@ def _normalize_vector_search_result(data: dict, request_id: str) -> dict | None:
     out["vector_search"] = vector_search
     return out
 
+
+def get_snapshot(request_id: str) -> dict:
+    """
+    Non-blocking single-read snapshot of the cached result state.
+    Internal use only (e.g. voice_result's transcribe-phase loop) — not
+    whitelisted, does not wait, never returns "processing" is possible here.
+    """
+    request_id = (request_id or "").strip()
+    if not request_id:
+        return _empty_result(request_id, error="Missing request_id")
+    try:
+        cached = frappe.cache().get(request_id)
+    except Exception as e:
+        return _empty_result(request_id, error=f"Cache read error for {request_id}: {e}")
+    data, error = _safe_load_cache_payload(cached)
+    if error:
+        return _empty_result(request_id, error=f"No such request_id or unavailable state: {request_id}")
+    return _normalize_result(data, request_id)
+
+
 @frappe.whitelist(methods=["GET"], allow_guest=True)
-def result(
-    request_id: str,
-    phase: str = "answer",
-    wait_seconds: int | None = None,
-    poll_interval_ms: int | None = None,
-):
+def result(request_id: str, phase: str = "answer"):
     """
     Result API: Fetch answer by request_id.
-    Optional long-polling:
+    Blocks internally until the phase completes or its fixed wait window
+    elapses, then always returns a conclusive status — "success" or "failed".
     - phase=router: return routing decision state (text: after router, voice: after transcription + router)
     - phase=search: return vector-search completion state
     - phase=answer: return the final synthesized answer
-    - wait_seconds: 0-55, or omit for auto (text: 8s, voice: 25s)
-    - poll_interval_ms: 100-2000, or omit for auto (text: 300ms, voice: 500ms)
     """
     try:
         request_id = (request_id or "").strip()
@@ -339,19 +331,7 @@ def result(
 
         if phase == "router":
             is_voice = _is_voice_response(data, request_id)
-            wait_seconds = _resolve_wait_seconds(wait_seconds, is_voice=is_voice)
-            poll_interval_ms = _resolve_poll_interval_ms(poll_interval_ms, is_voice=is_voice)
-
-            if wait_seconds == 0:
-                router_out = _normalize_router_result(data, request_id)
-                if router_out:
-                    return router_out
-                out = _normalize_result(data, request_id)
-                out["phase"] = "router"
-                out["phase_complete"] = False
-                out["next_phase"] = "search" if data.get("tool") == "vector_search" else "answer"
-                return out
-
+            wait_seconds = _phase_wait_seconds(is_voice)
             deadline = time.monotonic() + wait_seconds
 
             while True:
@@ -361,13 +341,9 @@ def result(
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    out = _normalize_result(data, request_id)
-                    out["phase"] = "router"
-                    out["phase_complete"] = False
-                    out["next_phase"] = "search" if data.get("tool") == "vector_search" else "answer"
-                    return out
+                    return _timeout_result(_normalize_result(data, request_id), "router")
 
-                time.sleep(min(poll_interval_ms / 1000.0, remaining))
+                time.sleep(min(POLL_INTERVAL_MS / 1000.0, remaining))
 
                 cached = frappe.cache().get(request_id)
                 data, error = _safe_load_cache_payload(cached)
@@ -376,19 +352,7 @@ def result(
 
         if phase == "search":
             is_voice = _is_voice_response(data, request_id)
-            wait_seconds = _resolve_wait_seconds(wait_seconds, is_voice=is_voice)
-            poll_interval_ms = _resolve_poll_interval_ms(poll_interval_ms, is_voice=is_voice)
-
-            if wait_seconds == 0:
-                search_out = _normalize_vector_search_result(data, request_id)
-                if search_out:
-                    return search_out
-                out = _normalize_result(data, request_id)
-                out["phase"] = "search"
-                out["phase_complete"] = False
-                out["next_phase"] = "answer"
-                return out
-
+            wait_seconds = _phase_wait_seconds(is_voice)
             deadline = time.monotonic() + wait_seconds
 
             while True:
@@ -398,13 +362,9 @@ def result(
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    out = _normalize_result(data, request_id)
-                    out["phase"] = "search"
-                    out["phase_complete"] = False
-                    out["next_phase"] = "answer"
-                    return out
+                    return _timeout_result(_normalize_result(data, request_id), "search")
 
-                time.sleep(min(poll_interval_ms / 1000.0, remaining))
+                time.sleep(min(POLL_INTERVAL_MS / 1000.0, remaining))
 
                 cached = frappe.cache().get(request_id)
                 data, error = _safe_load_cache_payload(cached)
@@ -420,20 +380,15 @@ def result(
             return out
 
         is_voice = _is_voice_response(data, request_id)
-        wait_seconds = _resolve_wait_seconds(wait_seconds, is_voice=is_voice)
-        poll_interval_ms = _resolve_poll_interval_ms(poll_interval_ms, is_voice=is_voice)
-
-        if wait_seconds == 0:
-            return out
-
+        wait_seconds = _phase_wait_seconds(is_voice)
         deadline = time.monotonic() + wait_seconds
 
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return out
+                return _timeout_result(out, "answer")
 
-            time.sleep(min(poll_interval_ms / 1000.0, remaining))
+            time.sleep(min(POLL_INTERVAL_MS / 1000.0, remaining))
 
             cached = frappe.cache().get(request_id)
             data, error = _safe_load_cache_payload(cached)
