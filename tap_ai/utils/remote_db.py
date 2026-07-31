@@ -7,6 +7,7 @@ Used by SQL answerer and RAG answerer for data fetching.
 """
 
 import os
+import queue
 import threading
 
 import psycopg2
@@ -21,8 +22,100 @@ _POOL_PID = None
 _POOL_LOCK = threading.Lock()
 
 
+class _QueuePool:
+    """Thread-safe connection pool backed by queue.Queue.
+
+    psycopg2's own pool.ThreadedConnectionPool serializes getconn()/putconn()
+    behind a single lock held for the call's full duration. Under this app's
+    remote-DB access pattern — several namespace searches fired concurrently
+    via a ThreadPoolExecutor per RAG query — that lock turned "parallel"
+    search into an accidental per-thread-serialized bottleneck (each
+    concurrent checkout paying ~200ms), regardless of whether the pool was
+    cold or already fully warmed. queue.Queue's own (C-level) locking around
+    get/put doesn't exhibit that behavior, so checkout stays effectively free
+    and concurrent searches actually run concurrently.
+    """
+
+    def __init__(self, minconn: int, maxconn: int, **conn_kwargs: Any):
+        self._conn_kwargs = conn_kwargs
+        self._maxconn = maxconn
+        self._pool: "queue.Queue" = queue.Queue()
+        self._count = 0
+        self._count_lock = threading.Lock()
+        self._closed = False
+        for _ in range(minconn):
+            self._pool.put(self._new_connection())
+
+    def _new_connection(self):
+        conn = psycopg2.connect(**self._conn_kwargs)
+        with self._count_lock:
+            self._count += 1
+        return conn
+
+    def _discard(self, conn) -> None:
+        with self._count_lock:
+            self._count -= 1
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def getconn(self, key=None):
+        if self._closed:
+            raise pool.PoolError("connection pool is closed")
+        while True:
+            try:
+                conn = self._pool.get_nowait()
+            except queue.Empty:
+                with self._count_lock:
+                    can_grow = self._count < self._maxconn
+                    if can_grow:
+                        self._count += 1
+                if can_grow:
+                    try:
+                        return psycopg2.connect(**self._conn_kwargs)
+                    except Exception:
+                        with self._count_lock:
+                            self._count -= 1
+                        raise
+                try:
+                    conn = self._pool.get(timeout=30)
+                except queue.Empty:
+                    raise pool.PoolError("connection pool exhausted")
+
+            if conn.closed:
+                self._discard(conn)
+                continue
+            return conn
+
+    def putconn(self, conn, key=None, close: bool = False) -> None:
+        if self._closed or close or conn.closed:
+            self._discard(conn)
+            return
+        try:
+            conn.rollback()
+        except Exception:
+            self._discard(conn)
+            return
+        self._pool.put(conn)
+
+    def closeall(self) -> None:
+        self._closed = True
+        while True:
+            try:
+                conn = self._pool.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                conn.close()
+            except Exception:
+                pass
+        with self._count_lock:
+            self._count = 0
+
+
 class _PooledConnectionHandle:
-    def __init__(self, db_pool: pool.ThreadedConnectionPool, conn):
+    def __init__(self, db_pool: _QueuePool, conn):
         self._pool = db_pool
         self._conn = conn
         self._returned = False
@@ -79,7 +172,7 @@ def _close_pool() -> None:
         _POOL = None
 
 
-def _create_pool() -> pool.ThreadedConnectionPool:
+def _create_pool() -> _QueuePool:
     cfg = _get_connection_config()
     minconn = int(frappe.conf.get("remote_db_pool_min", 2) or 2)
     maxconn = int(frappe.conf.get("remote_db_pool_max", 10) or 10)
@@ -88,10 +181,10 @@ def _create_pool() -> pool.ThreadedConnectionPool:
     if maxconn < minconn:
         maxconn = minconn
 
-    return pool.ThreadedConnectionPool(minconn=minconn, maxconn=maxconn, **cfg)
+    return _QueuePool(minconn=minconn, maxconn=maxconn, **cfg)
 
 
-def _get_pool() -> pool.ThreadedConnectionPool:
+def _get_pool() -> _QueuePool:
     global _POOL, _POOL_PID
 
     pid = os.getpid()
